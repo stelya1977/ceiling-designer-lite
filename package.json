@@ -1,9 +1,21 @@
 {
   "name": "ceiling-designer-lite",
-  "version": "0.7.9",
+  "version": "0.7.10",
   "private": true,
   "type": "module",
-  "scripts": { "build": "vite build", "dev": "vite" },
-  "dependencies": { "lucide-react": "^0.468.0", "react": "^18.3.1", "react-dom": "^18.3.1" },
-  "devDependencies": { "@vitejs/plugin-react": "^4.3.4", "typescript": "^5.7.2", "vite": "^6.0.5" }
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "@supabase/supabase-js": "^2.49.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
 }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useCloud } from './cloud'
 import {
   Plus, Search, ChevronRight, House, ClipboardList, Layers3, Settings,
   X, ArrowLeft, Trash2, Ruler, RotateCcw, MapPin, Navigation, ImagePlus, Pencil, Sparkles, Download
@@ -154,11 +155,7 @@ const makeSides = (count: number): Side[] =>
     length: ''
   }))
 
-function readProjects(): Project[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return demo
-    const parsed = JSON.parse(raw) as Project[]
+function normalizeProjects(parsed: Project[]): Project[] {
     return parsed.map(p => ({
       ...p,
       rooms: (p.rooms || []).map(r => ({
@@ -178,9 +175,13 @@ function readProjects(): Project[] {
         }
       }))
     }))
-  } catch {
-    return demo
-  }
+}
+
+function readProjects(): Project[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    return raw ? normalizeProjects(JSON.parse(raw) as Project[]) : demo
+  } catch { return demo }
 }
 
 function formatNumber(n: number) {
@@ -226,8 +227,51 @@ export default function App() {
   const [discountPercent, setDiscountPercent] = useState('0')
   const [roundedEstimate, setRoundedEstimate] = useState(false)
 
-  useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(projects)) }, [projects])
-  useEffect(() => { localStorage.setItem(CATALOG_KEY, JSON.stringify(catalog)) }, [catalog])
+  const [storageWarning, setStorageWarning] = useState('')
+  const [loginOpen, setLoginOpen] = useState(false)
+  const [loginEmail, setLoginEmail] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginBusy, setLoginBusy] = useState(false)
+  const [loginError, setLoginError] = useState('')
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(projects))
+      localStorage.setItem(CATALOG_KEY, JSON.stringify(catalog))
+      setStorageWarning('')
+    } catch { setStorageWarning('Не вдалося зберегти всі дані в браузері. Не закривай сторінку до успішної синхронізації.') }
+  }, [projects, catalog])
+  const cloud = useCloud({ projects, catalog }, next => {
+    // Keep the same storage keys and existing local data format.
+    const oldProjects = localStorage.getItem(STORAGE_KEY)
+    const oldCatalog = localStorage.getItem(CATALOG_KEY)
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next.projects))
+      localStorage.setItem(CATALOG_KEY, JSON.stringify(next.catalog))
+    } catch (e) {
+      try {
+        if (oldProjects === null) localStorage.removeItem(STORAGE_KEY); else localStorage.setItem(STORAGE_KEY, oldProjects)
+        if (oldCatalog === null) localStorage.removeItem(CATALOG_KEY); else localStorage.setItem(CATALOG_KEY, oldCatalog)
+      } catch { /* live data remains intact */ }
+      throw e
+    }
+    setProjects(next.projects); setCatalog(next.catalog)
+    setActive(prev => prev ? next.projects.find(p => p.id === prev.id) || null : null)
+    setEstimateProject(prev => prev ? next.projects.find(p => p.id === prev.id) || null : null)
+    setEditingCatalogId(null)
+  }, w => w.projects.length === 1 && w.projects[0].id === 'NSK-001'
+    && JSON.stringify(normalizeProjects([{ ...w.projects[0], created: '' }])) === JSON.stringify(normalizeProjects([{ ...demo[0], created: '' }]))
+    && JSON.stringify(w.catalog) === JSON.stringify(defaultCatalog))
+  async function submitCloudLogin(e: React.FormEvent) {
+    e.preventDefault(); setLoginBusy(true); setLoginError('')
+    try { await cloud.login(loginEmail, loginPassword); setLoginPassword(''); setLoginOpen(false) }
+    catch (err) { setLoginError(err instanceof Error ? err.message : String(err)) }
+    finally { setLoginBusy(false) }
+  }
+  function downloadLocalBackup() {
+    const url = URL.createObjectURL(new Blob([JSON.stringify({ projects, catalog }, null, 2)], { type: 'application/json' }))
+    const a = document.createElement('a'); a.href = url; a.download = `ceiling-backup-${new Date().toISOString().slice(0,10)}.json`; a.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
 
   const filtered = useMemo(
     () => projects.filter(p =>
@@ -821,20 +865,40 @@ export default function App() {
         <div className="sidebar-bottom">
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
-          <small>Прототип 0.7.9</small>
+          <small>Версія 0.7.10</small>
         </div>
       </aside>
 
       <main className="main">
         <header className="topbar">
           <div className="mobile-brand">НСК <span>CEILING DESIGNER</span></div>
-          <div className="topbar-right"><span className="status-dot"/> Локальний режим</div>
+          <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <span className="status-dot" style={{ background: cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
+            <span>{cloud.status}</span>
+            {cloud.session ? <><button className="button secondary" disabled={cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
+          </div>
         </header>
-
+        {(storageWarning || cloud.error || loginError && !loginOpen) && <div className="panel" style={{ margin: '12px', color: '#ffd4a3' }} role="alert">{storageWarning && <p>{storageWarning}</p>}{cloud.error && <p>{cloud.error}</p>}{loginError && !loginOpen && <p>{loginError}</p>}</div>}
+        {loginOpen && !cloud.session && <form className="panel form-panel" style={{ margin: '12px auto', maxWidth: 440 }} onSubmit={submitCloudLogin}>
+          <h2>Вхід до Ceiling Designer Lite</h2>
+          <label>Електронна пошта<input type="email" autoComplete="username" required value={loginEmail} onChange={e => setLoginEmail(e.target.value)}/></label>
+          <label>Пароль<input type="password" autoComplete="current-password" required value={loginPassword} onChange={e => setLoginPassword(e.target.value)}/></label>
+          {loginError && <p role="alert" style={{ color: '#ffb4b4' }}>{loginError}</p>}
+          <div className="form-actions"><button type="button" className="button secondary" onClick={() => { setLoginPassword(''); setLoginOpen(false) }}>Скасувати</button><button type="submit" className="button" disabled={loginBusy}>{loginBusy ? 'Вхід…' : 'Увійти'}</button></div>
+        </form>}
+        {cloud.conflict && <div className="panel form-panel" style={{ margin: '12px', borderColor: '#ffb900' }} role="alert">
+          <h2>Вибір версії даних</h2>
+          <p>Версії об’єктів або каталогу відрізняються. Автоматичний запис призупинено. Збережи резервну копію перед вибором.</p>
+          <button className="button secondary" onClick={downloadLocalBackup}>Завантажити локальну копію (JSON)</button>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {cloud.conflict.revision !== null && <button className="button secondary" disabled={cloud.busy} onClick={() => { if (confirm('Замінити локальні об’єкти й каталог версією з хмари?')) void cloud.sync('cloud') }}>Завантажити з хмари</button>}
+            <button className="button" disabled={cloud.busy} onClick={() => { if (confirm('Записати локальні об’єкти й каталог у хмару? Попередня хмарна версія буде замінена.')) void cloud.sync('local') }}>Зберегти локальну версію в хмарі</button>
+          </div>
+        </div>}
 
         {catalogPage ? (
           <section className="content narrow">
-            <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування позиціями та базовими цінами. Поки що дані зберігаються локально в цьому браузері.</p></div></div>
+            <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування позиціями та базовими цінами. Дані зберігаються локально та синхронізуються після входу.</p></div></div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
               {(['Профілі','Карнизи','LED-профілі','Інше'] as CatalogCategory[]).map(cat => <button key={cat} style={{ ...buttonStyle, background: catalogCategory === cat ? '#ffb900' : '#405263', color: catalogCategory === cat ? '#18222c' : '#fff' }} onClick={() => { setCatalogCategory(cat); setEditingCatalogId(null); setCatalogDraft({ ...emptyCatalogDraft, category: cat }) }}>{cat}</button>)}
             </div>
@@ -1607,7 +1671,7 @@ export default function App() {
                 <ChevronRight className="project-chevron" size={19}/>
               </button>) : <div className="empty"><div className="empty-icon"><House size={25}/></div><b>Нічого не знайдено</b><span>Зміни пошуковий запит або створи новий об’єкт.</span></div>}
             </div>
-            <div className="prototype-note"><span className="status-dot"/> Локальний прототип. Дані зберігаються в цьому браузері на цьому пристрої.</div>
+            <div className="prototype-note"><span className="status-dot"/> Дані зберігаються на цьому пристрої. Після входу доступна хмарна синхронізація.</div>
           </section>
         )}
         {locationOpen && active && (
