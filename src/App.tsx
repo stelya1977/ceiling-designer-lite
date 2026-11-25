@@ -227,6 +227,21 @@ export default function App() {
   const [discountPercent, setDiscountPercent] = useState('0')
   const [roundedEstimate, setRoundedEstimate] = useState(false)
 
+  const [networkOnline, setNetworkOnline] = useState(navigator.onLine)
+  const [offlineReady, setOfflineReady] = useState(!!navigator.serviceWorker?.controller)
+  useEffect(() => {
+    const networkChanged = () => setNetworkOnline(navigator.onLine)
+    const shellChanged = () => setOfflineReady(!!navigator.serviceWorker?.controller)
+    window.addEventListener('online', networkChanged)
+    window.addEventListener('offline', networkChanged)
+    navigator.serviceWorker?.addEventListener('controllerchange', shellChanged)
+    networkChanged(); shellChanged()
+    return () => {
+      window.removeEventListener('online', networkChanged)
+      window.removeEventListener('offline', networkChanged)
+      navigator.serviceWorker?.removeEventListener('controllerchange', shellChanged)
+    }
+  }, [])
   const [storageWarning, setStorageWarning] = useState('')
   const [loginOpen, setLoginOpen] = useState(false)
   const [loginEmail, setLoginEmail] = useState('')
@@ -865,7 +880,7 @@ export default function App() {
         <div className="sidebar-bottom">
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
-          <small>Версія 0.7.10</small>
+          <small>Версія 0.7.11</small>
         </div>
       </aside>
 
@@ -873,9 +888,10 @@ export default function App() {
         <header className="topbar">
           <div className="mobile-brand">НСК <span>CEILING DESIGNER</span></div>
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <span className="status-dot" style={{ background: cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
-            <span>{cloud.status}</span>
-            {cloud.session ? <><button className="button secondary" disabled={cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
+            <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
+            <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
+            {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
+            {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
         </header>
         {(storageWarning || cloud.error || loginError && !loginOpen) && <div className="panel" style={{ margin: '12px', color: '#ffd4a3' }} role="alert">{storageWarning && <p>{storageWarning}</p>}{cloud.error && <p>{cloud.error}</p>}{loginError && !loginOpen && <p>{loginError}</p>}</div>}
