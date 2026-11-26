@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useCloud } from './cloud'
 import RoomComponents from './RoomComponents'
 import { categories, categoryOf, effectiveCatalog, newPricing, newSelection, calculate, snapshot, num, type CatalogCategory, type CatalogItem, type RoomPricing, type Unit } from './pricing'
@@ -189,6 +189,33 @@ function escapeHtml(value: unknown) { return String(value ?? '').replace(/&/g,'&
 
 function formatNumber(n: number) {
   return n.toFixed(2).replace('.', ',')
+}
+
+// A text-backed measurement input avoids native number-input locale restrictions.
+// Keep the typing buffer (including a trailing decimal separator) separate from
+// the persisted geometry. Persist only normalized, finite non-negative numbers.
+function MeasurementInput({ value, onChange, placeholder, style }: {
+  value: string | number | undefined
+  onChange: (value: string) => void
+  placeholder: string
+  style: CSSProperties
+}) {
+  const stored = value == null ? '' : String(value).replace('.', ',')
+  const [draft, setDraft] = useState<string | null>(null)
+  return <input type="text" inputMode="decimal" autoComplete="off" spellCheck={false}
+    style={style} value={draft ?? stored} placeholder={placeholder}
+    onFocus={() => setDraft(stored)}
+    onChange={e => {
+      const next = e.target.value
+      if (!/^\d*(?:[.,]\d*)?$/.test(next)) return
+      const normalized = next.replace(',', '.')
+      if (next !== '' && normalized !== '.' && !Number.isFinite(Number(normalized))) return
+      setDraft(next)
+      if (next === '') onChange('')
+      else if (normalized !== '.') onChange(String(Number(normalized)))
+    }}
+    onBlur={() => setDraft(null)}
+    onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }} />
 }
 
 export default function App() {
@@ -878,7 +905,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.12</small>
+          <small>Версія 0.7.13</small>
         </div>
       </aside>
 
@@ -1264,15 +1291,15 @@ export default function App() {
               <div style={panelStyle}>
                 <h2 style={{ marginTop: 0 }}>Розміри приміщення</h2>
                 <label style={labelStyle}>Довжина, м
-                  <input style={inputStyle} type="number" min="0" step="0.01"
-                    value={activeRoom.length ?? ''}
-                    onChange={e => updateRoom(activeRoom.id, { length: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+                  <MeasurementInput key={activeRoom.id + '-length'} style={inputStyle}
+                    value={activeRoom.length}
+                    onChange={value => updateRoom(activeRoom.id, { length: value === '' ? undefined : Number(value) })}
                     placeholder="Наприклад, 5,20"/>
                 </label>
                 <label style={labelStyle}>Ширина, м
-                  <input style={inputStyle} type="number" min="0" step="0.01"
-                    value={activeRoom.width ?? ''}
-                    onChange={e => updateRoom(activeRoom.id, { width: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)) })}
+                  <MeasurementInput key={activeRoom.id + '-width'} style={inputStyle}
+                    value={activeRoom.width}
+                    onChange={value => updateRoom(activeRoom.id, { width: value === '' ? undefined : Number(value) })}
                     placeholder="Наприклад, 3,60"/>
                 </label>
                 <div className="room-area">
@@ -1285,9 +1312,9 @@ export default function App() {
                   {diagonalKeys(activeRoom.sides.length).map(diagonal => (
                     <label key={diagonal.key} style={labelStyle}>
                       {diagonal.label}, м
-                      <input style={inputStyle} type="number" min="0" step="0.01"
+                      <MeasurementInput key={activeRoom.id + diagonal.key} style={inputStyle}
                         value={(activeRoom.diagonals || {})[diagonal.key] || ''}
-                        onChange={e => updateDiagonal(activeRoom, diagonal.key, e.target.value)}
+                        onChange={value => updateDiagonal(activeRoom, diagonal.key, value)}
                         placeholder="0,00"/>
                     </label>
                   ))}
@@ -1382,8 +1409,8 @@ export default function App() {
                   {activeRoom.sides.map(side => (
                     <label key={side.id} style={labelStyle}>
                       {side.label}, м
-                      <input style={inputStyle} type="number" min="0" step="0.01" value={side.length}
-                        onChange={e => updateSide(activeRoom, side.id, e.target.value)} placeholder="0,00"/>
+                      <MeasurementInput key={activeRoom.id + side.id} style={inputStyle} value={side.length}
+                        onChange={value => updateSide(activeRoom, side.id, value)} placeholder="0,00"/>
                     </label>
                   ))}
                 </div>
@@ -1393,9 +1420,9 @@ export default function App() {
                   {diagonalKeys(activeRoom.sides.length).map(diagonal => (
                     <label key={diagonal.key} style={labelStyle}>
                       {diagonal.label}, м
-                      <input style={inputStyle} type="number" min="0" step="0.01"
+                      <MeasurementInput key={activeRoom.id + diagonal.key} style={inputStyle}
                         value={(activeRoom.diagonals || {})[diagonal.key] || ''}
-                        onChange={e => updateDiagonal(activeRoom, diagonal.key, e.target.value)}
+                        onChange={value => updateDiagonal(activeRoom, diagonal.key, value)}
                         placeholder="0,00"/>
                     </label>
                   ))}
