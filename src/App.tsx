@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useCloud } from './cloud'
+import RoomComponents from './RoomComponents'
+import { categories, categoryOf, effectiveCatalog, newPricing, newSelection, calculate, snapshot, num, type CatalogCategory, type CatalogItem, type RoomPricing, type Unit } from './pricing'
 import {
   Plus, Search, ChevronRight, House, ClipboardList, Layers3, Settings,
   X, ArrowLeft, Trash2, Ruler, RotateCcw, MapPin, Navigation, ImagePlus, Pencil, Sparkles, Download
@@ -43,6 +45,7 @@ type Room = {
   sides: Side[]
   vertices?: Point[]
   diagonals?: Record<string, string>
+  pricing?: RoomPricing
   components?: {
     ceiling: 'fabric'
     profile: 'standard' | 'fly' | 'ud'
@@ -70,8 +73,6 @@ type Room = {
   }
 }
 
-type CatalogCategory = 'Профілі' | 'Карнизи' | 'LED-профілі' | 'Інше'
-type CatalogItem = { id: string; category: CatalogCategory; name: string; price: string; unit: 'м' | 'шт.'; stockLength: string; cornerPrice: string; freeCorners: string; description: string }
 const CATALOG_KEY = 'nsk-ceiling-designer-catalog-v1'
 const defaultCatalog: CatalogItem[] = [
   { id: 'standard-profile', category: 'Профілі', name: 'Стандартний профіль', price: '0', unit: 'м', stockLength: '', cornerPrice: '400', freeCorners: '4', description: 'Декоративна вставка та додаткові кути налаштовуються окремо' },
@@ -184,6 +185,8 @@ function readProjects(): Project[] {
   } catch { return demo }
 }
 
+function escapeHtml(value: unknown) { return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') }
+
 function formatNumber(n: number) {
   return n.toFixed(2).replace('.', ',')
 }
@@ -191,10 +194,11 @@ function formatNumber(n: number) {
 export default function App() {
   const [projects, setProjects] = useState<Project[]>(readProjects)
   const [catalog, setCatalog] = useState<CatalogItem[]>(readCatalog)
+  const availableCatalog = useMemo(() => effectiveCatalog(catalog), [catalog])
   const [catalogPage, setCatalogPage] = useState(false)
   const [catalogCategory, setCatalogCategory] = useState<CatalogCategory>('Профілі')
   const [editingCatalogId, setEditingCatalogId] = useState<string | null>(null)
-  const emptyCatalogDraft = { category: 'Профілі' as CatalogCategory, name: '', price: '', unit: 'м' as 'м' | 'шт.', stockLength: '', cornerPrice: '0', freeCorners: '0', description: '' }
+  const emptyCatalogDraft = { category: 'Профілі' as CatalogCategory, name: '', price: '', unit: 'м' as Unit, stockLength: '', cornerPrice: '0', freeCorners: '0', description: '', billStock: false, ledPrice: '', powerPrice: '', grillePrice: '' }
   const [catalogDraft, setCatalogDraft] = useState(emptyCatalogDraft)
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
@@ -206,11 +210,6 @@ export default function App() {
   const [editingVizMarkId, setEditingVizMarkId] = useState<string | null>(null)
   const [hiddenVizTypes, setHiddenVizTypes] = useState<string[]>([])
   const [vizStep, setVizStep] = useState(2)
-  const [standardOpen, setStandardOpen] = useState(true)
-  const [flyOpen, setFlyOpen] = useState(false)
-  const [udOpen, setUdOpen] = useState(false)
-  const [fn27Open, setFn27Open] = useState(false)
-  const [sk30Open, setSk30Open] = useState(true)
   const [client, setClient] = useState('')
   const [phone, setPhone] = useState('')
   const [address, setAddress] = useState('')
@@ -307,7 +306,7 @@ export default function App() {
     const name = roomName.trim()
     if (!name) return
     setRooms(prev => [...prev, {
-      id: makeId(), name, shape: 'rectangle', sides: makeSides(4), vertices: regularVertices(4), diagonals: {}, components: defaultComponents()
+      id: makeId(), name, shape: 'rectangle', sides: makeSides(4), vertices: regularVertices(4), diagonals: {}, components: defaultComponents(), pricing: newPricing(availableCatalog)
     }])
     setRoomName('')
   }
@@ -401,7 +400,7 @@ export default function App() {
       sides: makeSides(4),
       vertices: regularVertices(4),
       diagonals: {},
-      components: defaultComponents()
+      components: defaultComponents(), pricing: newPricing(availableCatalog)
     }
     const updated: Project = { ...active, rooms: [...active.rooms, newRoom] }
     syncProject(updated)
@@ -460,6 +459,23 @@ export default function App() {
     return `${Math.round(value).toLocaleString('uk-UA')} ₴`
   }
 
+  function convertLegacyRoom(room: Room): RoomPricing {
+    const c = {...defaultComponents(), ...(room.components || {})}
+    const oldCatalog = effectiveCatalog(defaultCatalog)
+    const result = newPricing(oldCatalog)
+    result.insertColor=c.insertColor; result.insertOverride=c.insertLength || '0'; result.standardCorners=c.standardCorners || '4'
+    const add = (id:string, quantity:string, patch: Partial<ReturnType<typeof newSelection>> = {}) => {
+      const item = oldCatalog.find(x=>x.id===id)
+      if(item && num(quantity)>0) result.items.push({...newSelection(item,makeId()),quantity,...patch})
+    }
+    if(c.flyEnabled) add('alutat-fly',c.flyLength,{corners:c.flyCorners,power:c.flyPower,grilles:c.flyGrilles})
+    if(c.udEnabled) add('shadow-ud',c.udLength,{corners:c.udCorners})
+    for(const item of c.sk30Items || []) add('alutat-sk30',item.length,{color:item.color,ledEnabled:item.ledEnabled ?? num(item.ledLength)>0,ledLength:item.ledLength,ledColor:item.ledColor||'Тепле 3000K',power:item.power,grilles:item.grilles})
+    add('fn27',c.fn27Length,{power:c.fn27Power,grilles:c.fn27Grilles})
+    for(const item of c.catalogItems||[]) result.items.push({...newSelection({id:item.catalogId,category:'Інше',name:item.name,price:item.price,unit:item.unit,stockLength:'',cornerPrice:'0',freeCorners:'0',description:''},item.id),quantity:item.quantity})
+    return result
+  }
+
   function componentEstimate(room: Room) {
     const c = { ...defaultComponents(), ...(room.components || {}) }
     const area = roomArea(room) || 0
@@ -492,6 +508,7 @@ export default function App() {
 
   function estimateRows(project: Project) {
     return project.rooms.map(room => {
+      if(room.pricing){const e=calculate(room.pricing,roomArea(room)||0,roomPerimeter(room)||0);return {room,rows:e.rows,total:e.total}}
       const e = componentEstimate(room)
       const rows: { label: string; amount: number }[] = []
       if (e.fabric > 0) rows.push({ label: `Полотно MSD Premium (${formatNumber(e.area)} м²)`, amount: e.fabric })
@@ -515,7 +532,7 @@ export default function App() {
   function openEstimate(project: Project, fromCreate = false) {
     const today = new Date()
     const measurementDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-    setEstimateProject({ ...project, measurementDate })
+    setEstimateProject({ ...project, measurementDate: project.measurementDate || measurementDate })
     setEstimateReturnToCreate(fromCreate)
     setDiscountOpen(false)
     setDiscountPercent('0')
@@ -537,7 +554,7 @@ export default function App() {
     const deposit = Math.max(0, Number(estimateProject.deposit || 0))
     const balance = Math.max(0, total - deposit)
     const moneyText = (n: number) => `${Math.round(n).toLocaleString('uk-UA')} грн`
-    const rowsHtml = sections.map(section => `<section class="room"><h2>${section.room.name}</h2><table>${section.rows.map(row => `<tr><td>${row.label}</td><td>${moneyText(row.amount)}</td></tr>`).join('')}<tr class="subtotal"><td>Разом за кімнату</td><td>${moneyText(section.total)}</td></tr></table></section>`).join('')
+    const rowsHtml = sections.map(section => `<section class="room"><h2>${section.room.name}</h2><table>${section.rows.map(row => `<tr><td>${escapeHtml(row.label)}</td><td>${moneyText(row.amount)}</td></tr>`).join('')}<tr class="subtotal"><td>Разом за кімнату</td><td>${moneyText(section.total)}</td></tr></table></section>`).join('')
     const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;background:#fff;padding:32px;max-width:900px;margin:auto}h1{font-size:28px;margin:0 0 8px}p{color:#596675;margin:4px 0 24px}.room{margin:22px 0;page-break-inside:avoid}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:8px}table{width:100%;border-collapse:collapse}td{padding:9px 4px;border-bottom:1px solid #e4e8ec}td:last-child{text-align:right;white-space:nowrap;font-weight:600}.subtotal td{font-weight:700;background:#f5f7f9}.total{margin-top:26px;padding:18px;background:#f5f7f9;font-size:24px;font-weight:700;text-align:right}.discount{text-align:right;color:#596675}@media print{body{padding:0}}</style></head><body><h1>Кошторис · НСК — Натяжні Стелі Коломия</h1><p>Замовник: ${estimateProject.client || '—'} · Телефон: ${estimateProject.phone || '—'}<br>Об’єкт: ${estimateProject.address || '—'}<br>Дата заміру: ${formatMeasurementDate(estimateProject.measurementDate)}</p>${rowsHtml}${Number(discountPercent)>0 ? `<p class="discount">Знижка ${discountPercent}%: −${moneyText(base-discounted)}</p>` : ''}<div class="total">Вартість замовлення: ${moneyText(total)}<br><small>Завдаток: ${moneyText(deposit)}<br>Залишок до оплати: ${moneyText(balance)}</small></div></body></html>`
     if (format === 'pdf') {
       const win = window.open('', '_blank')
@@ -572,6 +589,7 @@ export default function App() {
     }
     const roomPages = project.rooms.map((room, index) => {
       let drawing = ''
+      let orderedSides: Side[] = []
       if (room.shape === 'rectangle') {
         drawing = `<svg class="drawing" viewBox="0 0 600 420" role="img" aria-label="Полотно ${index + 1}">
           <polygon points="130,330 130,90 470,90 470,330" fill="#fff" stroke="#111" stroke-width="3"/>
@@ -583,7 +601,7 @@ export default function App() {
         const signedArea = rawPts.reduce((sum, point, i) => { const next = rawPts[(i + 1) % rawPts.length]; return sum + point.x * next.y - next.x * point.y }, 0)
         const clockwise = signedArea >= 0
         const pts = rawPts.map((_, i) => rawPts[(startIndex + (clockwise ? i : -i) + rawPts.length * 2) % rawPts.length])
-        const orderedSides = pts.map((_, i) => room.sides[(clockwise ? startIndex + i : startIndex - i - 1 + room.sides.length * 2) % room.sides.length])
+        orderedSides = pts.map((_, i) => room.sides[(clockwise ? startIndex + i : startIndex - i - 1 + room.sides.length * 2) % room.sides.length])
         const poly = pts.map(v => `${v.x},${v.y}`).join(' ')
         const sideTexts = pts.map((v, i) => {
           const next = pts[(i + 1) % pts.length]
@@ -628,11 +646,17 @@ export default function App() {
         if (!totals[key]) totals[key] = { value: 0, unit }
         totals[key].value += value
       }
+      if(room.pricing){
+        const m=calculate(room.pricing,roomArea(room)||0,roomPerimeter(room)||0)
+        for(const v of m.materials){items.push(`${v.label} — ${qty(v.quantity,v.unit)}`);addTotal(v.label,v.quantity,v.unit)}
+        if(m.overrun)items.push('УВАГА: довжина периметральних профілів перевищує периметр')
+      }else{
+      const plasticLength=Math.max(0,(roomPerimeter(room)||0)-(c.flyEnabled?num(c.flyLength):0)-(c.udEnabled?num(c.udLength):0))
+      if(plasticLength>0){items.push(`Профіль пластиковий — ${qty(plasticLength)}`);addTotal('Профіль пластиковий',plasticLength)}
       if (e.insertLength > 0) {
         items.push(`Декоративна вставка (${c.insertColor === 'black' ? 'чорна' : 'біла'}) — ${qty(e.insertLength)}`)
         addTotal(`Декоративна вставка (${c.insertColor === 'black' ? 'чорна' : 'біла'})`, e.insertLength)
-        items.push(`Профіль пластиковий — ${qty(e.insertLength)}`)
-        addTotal('Профіль пластиковий', e.insertLength)
+
       }
       if (c.flyEnabled && Number(c.flyLength) > 0) { const stockCount = Math.ceil(Number(c.flyLength) / 2); items.push(`ALUTAT FLY — ${qty(c.flyLength)} (планок по 2 м: ${stockCount} шт.)`); addTotal('ALUTAT FLY — планки по 2 м', stockCount, 'шт.') }
       if (c.flyEnabled && Number(c.flyPower) > 0) { items.push(`Блоки живлення FLY — ${qty(c.flyPower, 'шт.')}`); addTotal('Блоки живлення FLY', Number(c.flyPower), 'шт.') }
@@ -657,6 +681,7 @@ export default function App() {
       if (Number(c.fn27Grilles) > 0) { items.push(`Магнітні решітки FN-27 — ${qty(c.fn27Grilles, 'шт.')}`); addTotal('Магнітні решітки FN-27', Number(c.fn27Grilles), 'шт.') }
       e.catalogItems.filter(item => Number(item.quantity || 0) > 0).forEach(item => { items.push(`${item.name} — ${qty(item.quantity, item.unit || 'шт.')}`); addTotal(item.name, Number(item.quantity), item.unit || 'шт.') })
       if (Number(c.standardCorners) > 4) items.push(`Додаткові кути стандартного профілю — ${qty(Number(c.standardCorners) - 4, 'шт.')}`)
+      }
       let pts: Point[]
       if (room.shape === 'rectangle') {
         const length = Math.max(0.01, Number(room.length) || 1)
@@ -713,7 +738,7 @@ export default function App() {
     const deposit = Math.max(0, Number(estimateProject.deposit || 0))
     const balance = Math.max(0, total - deposit)
     const moneyText = (n: number) => `${Math.round(n).toLocaleString('uk-UA')} грн`
-    const rowsHtml = [...grouped.values()].map(row => `<tr><td>${row.label}</td><td>${moneyText(row.amount)}</td></tr>`).join('')
+    const rowsHtml = [...grouped.values()].map(row => `<tr><td>${escapeHtml(row.label)}</td><td>${moneyText(row.amount)}</td></tr>`).join('')
     const roomsHtml = `<p>Кількість кімнат: ${estimateProject.rooms.length}</p>`
     const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;background:#fff;padding:32px;max-width:900px;margin:auto}h1{font-size:28px;margin:0 0 8px}p{color:#596675;margin:4px 0 18px}table{width:100%;border-collapse:collapse;margin-top:20px}td{padding:11px 5px;border-bottom:1px solid #e4e8ec}td:last-child{text-align:right;white-space:nowrap;font-weight:700}.total{margin-top:26px;padding:18px;background:#f5f7f9;font-size:23px;font-weight:700;text-align:right}.small{font-size:15px;line-height:1.7}@media print{body{padding:0}}</style></head><body><h1>Загальний кошторис об’єкта</h1><p>НСК — Натяжні Стелі Коломия<br>Замовник: ${estimateProject.client || '—'} · Телефон: ${estimateProject.phone || '—'}<br>Адреса: ${estimateProject.address || '—'}<br>Дата заміру: ${formatMeasurementDate(estimateProject.measurementDate)}<br>${roomsHtml}</p><table>${rowsHtml}</table>${percent > 0 ? `<p>Знижка ${percent}%: −${moneyText(base-afterDiscount)}</p>` : ''}<div class="total">Разом за об’єкт: ${moneyText(total)}<div class="small">Завдаток: ${moneyText(deposit)}<br>Залишок до оплати: ${moneyText(balance)}</div></div></body></html>`
     if (format === 'pdf') {
@@ -738,34 +763,6 @@ export default function App() {
     img.src = url
   }
 
-  function addCatalogItemToRoom(room: Room, catalogId: string) {
-    const item = catalog.find(v => v.id === catalogId)
-    if (!item) return
-    const current = room.components || defaultComponents()
-    const existing = current.catalogItems || []
-    updateComponents(room, { catalogItems: [...existing, { id: makeId(), catalogId: item.id, name: item.name, price: item.price, unit: item.unit, quantity: '1' }] })
-  }
-  function updateRoomCatalogItem(room: Room, id: string, patch: Partial<{ quantity: string }>) {
-    const current = room.components || defaultComponents()
-    updateComponents(room, { catalogItems: (current.catalogItems || []).map(item => item.id === id ? { ...item, ...patch } : item) })
-  }
-  function removeRoomCatalogItem(room: Room, id: string) {
-    const current = room.components || defaultComponents()
-    updateComponents(room, { catalogItems: (current.catalogItems || []).filter(item => item.id !== id) })
-  }
-
-  function addSK30(room: Room) {
-    const current = room.components || defaultComponents()
-    updateComponents(room, { sk30Items: [...(current.sk30Items || []), { id: crypto.randomUUID(), color: 'white', length: '', ledLength: '', ledEnabled: false, ledColor: 'Тепле 3000K', power: '0', grilles: '0' }] })
-  }
-  function updateSK30(room: Room, id: string, patch: Partial<{ color: 'white' | 'black'; length: string; ledLength: string; ledEnabled: boolean; ledColor: string; power: string; grilles: string }>) {
-    const current = room.components || defaultComponents()
-    updateComponents(room, { sk30Items: (current.sk30Items || []).map(item => item.id === id ? { ...item, ...patch } : item) })
-  }
-  function removeSK30(room: Room, id: string) {
-    const current = room.components || defaultComponents()
-    updateComponents(room, { sk30Items: (current.sk30Items || []).filter(item => item.id !== id) })
-  }
   function sk30StockLength(need: number) {
     if (need <= 0) return 0
     const bars = [2, 2.5, 3.2, 3.6]
@@ -880,7 +877,8 @@ export default function App() {
         <div className="sidebar-bottom">
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
-          <small>Версія 0.7.11</small>
+          <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
+          <small>Версія 0.7.12</small>
         </div>
       </aside>
 
@@ -894,7 +892,7 @@ export default function App() {
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
         </header>
-        {(storageWarning || cloud.error || loginError && !loginOpen) && <div className="panel" style={{ margin: '12px', color: '#ffd4a3' }} role="alert">{storageWarning && <p>{storageWarning}</p>}{cloud.error && <p>{cloud.error}</p>}{loginError && !loginOpen && <p>{loginError}</p>}</div>}
+        {(storageWarning || cloud.error || loginError && !loginOpen) && <div className="panel" style={{ margin: '12px', color: '#ffd4a3' }} role="alert">{storageWarning && <p>{storageWarning}</p>}{cloud.error && <p>{!networkOnline && /fetch|network/i.test(cloud.error) ? 'Немає інтернету. Дані залишаються на пристрої до синхронізації.' : cloud.error}</p>}{loginError && !loginOpen && <p>{loginError}</p>}</div>}
         {loginOpen && !cloud.session && <form className="panel form-panel" style={{ margin: '12px auto', maxWidth: 440 }} onSubmit={submitCloudLogin}>
           <h2>Вхід до Ceiling Designer Lite</h2>
           <label>Електронна пошта<input type="email" autoComplete="username" required value={loginEmail} onChange={e => setLoginEmail(e.target.value)}/></label>
@@ -916,14 +914,14 @@ export default function App() {
           <section className="content narrow">
             <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування позиціями та базовими цінами. Дані зберігаються локально та синхронізуються після входу.</p></div></div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-              {(['Профілі','Карнизи','LED-профілі','Інше'] as CatalogCategory[]).map(cat => <button key={cat} style={{ ...buttonStyle, background: catalogCategory === cat ? '#ffb900' : '#405263', color: catalogCategory === cat ? '#18222c' : '#fff' }} onClick={() => { setCatalogCategory(cat); setEditingCatalogId(null); setCatalogDraft({ ...emptyCatalogDraft, category: cat }) }}>{cat}</button>)}
+              {categories.map(cat => <button key={cat} style={{ ...buttonStyle, background: catalogCategory === cat ? '#ffb900' : '#405263', color: catalogCategory === cat ? '#18222c' : '#fff' }} onClick={() => { setCatalogCategory(cat); setEditingCatalogId(null); setCatalogDraft({ ...emptyCatalogDraft, category: cat, unit: cat==='Полотна'?'м²':'м' }) }}>{cat}</button>)}
             </div>
             <div className="panel form-panel">
               <h2>{editingCatalogId ? 'Редагувати позицію' : 'Додати позицію'}</h2>
               <label>Назва<input value={catalogDraft.name} onChange={e => setCatalogDraft(v => ({ ...v, name: e.target.value }))} placeholder="Назва виробу"/></label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <label>Ціна<input type="number" min="0" value={catalogDraft.price} onChange={e => setCatalogDraft(v => ({ ...v, price: e.target.value }))}/></label>
-                <label>Одиниця<select value={catalogDraft.unit} onChange={e => setCatalogDraft(v => ({ ...v, unit: e.target.value as 'м' | 'шт.' }))}><option value="м">За метр</option><option value="шт.">За штуку</option></select></label>
+                <label>Одиниця<select value={catalogDraft.unit} disabled={catalogCategory==='Полотна'||editingCatalogId==='standard-profile'||editingCatalogId==='decorative-insert'} onChange={e => setCatalogDraft(v => ({ ...v, unit: e.target.value as Unit }))}><option value="м">За метр</option><option value="шт.">За штуку</option><option value="м²">За м²</option></select></label>
               </div>
               <label>Довжина заводської планки / варіанти довжин<input value={catalogDraft.stockLength} onChange={e => setCatalogDraft(v => ({ ...v, stockLength: e.target.value }))} placeholder="Наприклад, 2 або 2; 2,5; 3,2"/></label>
               <h3 style={{ margin: '8px 0 0' }}>Оплата кутів</h3>
@@ -931,24 +929,31 @@ export default function App() {
                 <label>Ціна за один кут, грн<input type="number" min="0" value={catalogDraft.cornerPrice} onChange={e => setCatalogDraft(v => ({ ...v, cornerPrice: e.target.value }))}/></label>
                 <label>Безкоштовних кутів<input type="number" min="0" step="1" value={catalogDraft.freeCorners} onChange={e => setCatalogDraft(v => ({ ...v, freeCorners: e.target.value }))}/></label>
               </div>
+              <label>Розрахунок ціни за довжиною<select value={catalogDraft.billStock?'stock':'actual'} onChange={e=>setCatalogDraft(v=>({...v,billStock:e.target.value==='stock'}))}><option value="actual">Фактична довжина</option><option value="stock">Закуплена довжина (цілі планки)</option></select></label>
+              {(['Профілі','Карнизи','Освітлення основне'].includes(catalogCategory))&&<>
+                <label>LED-підсвітка, грн/м (порожньо — не передбачено)<input type="number" min="0" value={catalogDraft.ledPrice} onChange={e=>setCatalogDraft(v=>({...v,ledPrice:e.target.value}))}/></label>
+                <label>Блок живлення, грн/шт. (порожньо — не передбачено)<input type="number" min="0" value={catalogDraft.powerPrice} onChange={e=>setCatalogDraft(v=>({...v,powerPrice:e.target.value}))}/></label>
+                <label>Магнітна решітка, грн/шт. (порожньо — не передбачено)<input type="number" min="0" value={catalogDraft.grillePrice} onChange={e=>setCatalogDraft(v=>({...v,grillePrice:e.target.value}))}/></label>
+              </>}
               <label>Примітки та додаткові тарифи<textarea value={catalogDraft.description} onChange={e => setCatalogDraft(v => ({ ...v, description: e.target.value }))} rows={3}/></label>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button className="button" disabled={!catalogDraft.name.trim()} onClick={() => {
-                  if (editingCatalogId) setCatalog(items => items.map(item => item.id === editingCatalogId ? { ...item, ...catalogDraft } : item))
-                  else setCatalog(items => [...items, { id: makeId(), ...catalogDraft, category: catalogCategory }])
-                  setEditingCatalogId(null); setCatalogDraft({ ...emptyCatalogDraft, category: catalogCategory })
+                <button className="button" disabled={!catalogDraft.name.trim()||catalogDraft.price.trim()===''||Number(catalogDraft.price)<0} onClick={() => {
+                  const draft={...catalogDraft,category:catalogCategory,unit:catalogCategory==='Полотна'?'м²' as const:editingCatalogId==='standard-profile'||editingCatalogId==='decorative-insert'?'м' as const:catalogDraft.unit}
+                  if (editingCatalogId) setCatalog(items => effectiveCatalog(items).map(item => item.id === editingCatalogId ? { ...item, ...draft } : item))
+                  else setCatalog(items => [...effectiveCatalog(items), { id: makeId(), ...draft }])
+                  setEditingCatalogId(null); setCatalogDraft({ ...emptyCatalogDraft, category: catalogCategory, unit: catalogCategory==='Полотна'?'м²':'м' })
                 }}>{editingCatalogId ? 'Зберегти зміни' : 'Додати до каталогу'}</button>
-                {editingCatalogId && <button className="button secondary" onClick={() => { setEditingCatalogId(null); setCatalogDraft({ ...emptyCatalogDraft, category: catalogCategory }) }}>Скасувати</button>}
+                {editingCatalogId && <button className="button secondary" onClick={() => { setEditingCatalogId(null); setCatalogDraft({ ...emptyCatalogDraft, category: catalogCategory, unit: catalogCategory==='Полотна'?'м²':'м' }) }}>Скасувати</button>}
               </div>
             </div>
             <div className="panel" style={{ marginTop: 16 }}>
               <h2>{catalogCategory}</h2>
-              {catalog.filter(item => item.category === catalogCategory).map(item => <div key={item.id} className="info-row" style={{ alignItems: 'flex-start', gap: 12 }}>
-                <div style={{ flex: 1 }}><b>{item.name}</b><div className="muted">{item.price} ₴/{item.unit} {item.stockLength ? `· Планки: ${item.stockLength} м` : ''}{Number(item.cornerPrice || 0) > 0 ? ` · Кут: ${item.cornerPrice} ₴` : ''}{Number(item.freeCorners || 0) > 0 ? ` · Безкоштовно: ${item.freeCorners}` : ''}</div>{item.description && <small className="muted">{item.description}</small>}</div>
-                <button className="button secondary" onClick={() => { setEditingCatalogId(item.id); setCatalogDraft({ ...emptyCatalogDraft, ...item, cornerPrice: item.cornerPrice ?? '0', freeCorners: item.freeCorners ?? '0' }) }}>Редагувати</button>
-                <button className="icon-button" aria-label="Видалити" onClick={() => { if (confirm(`Видалити «${item.name}» з каталогу?`)) setCatalog(items => items.filter(v => v.id !== item.id)) }}><Trash2 size={16}/></button>
+              {availableCatalog.filter(item => categoryOf(item) === catalogCategory).map(item => <div key={item.id} className="info-row" style={{ alignItems: 'flex-start', gap: 12 }}>
+                <div style={{ flex: 1 }}><b>{item.name}</b><div className="muted">{item.price} ₴/{item.unit} {item.stockLength ? `· Планки: ${item.stockLength} м` : ''}{Number(item.cornerPrice || 0) > 0 ? ` · Кут: ${item.cornerPrice} ₴` : ''}{Number(item.freeCorners || 0) > 0 ? ` · Безкоштовно: ${item.freeCorners}` : ''}</div>{item.billStock&&<div className="muted">Ціна за закуплену довжину</div>}{item.ledPrice&&<div className="muted">LED: {item.ledPrice} ₴/м</div>}{item.powerPrice&&<div className="muted">БЖ: {item.powerPrice} ₴/шт.</div>}{item.grillePrice&&<div className="muted">Решітка: {item.grillePrice} ₴/шт.</div>}{item.description && <small className="muted">Примітка: {item.description}</small>}</div>
+                <button className="button secondary" onClick={() => { setEditingCatalogId(item.id); setCatalogDraft({ ...emptyCatalogDraft, ...item, cornerPrice: item.cornerPrice ?? '0', freeCorners: item.freeCorners ?? '0', billStock:item.billStock??false,ledPrice:item.ledPrice??'',powerPrice:item.powerPrice??'',grillePrice:item.grillePrice??'' }) }}>Редагувати</button>
+                <button className="icon-button" aria-label="Видалити" disabled={['fabric-msd','standard-profile','decorative-insert'].includes(item.id)} onClick={() => { if (confirm(`Видалити «${item.name}» з каталогу?`)) setCatalog(items => effectiveCatalog(items).filter(v => v.id !== item.id)) }}><Trash2 size={16}/></button>
               </div>)}
-              {catalog.filter(item => item.category === catalogCategory).length === 0 && <p className="muted">У цій категорії поки немає позицій.</p>}
+              {availableCatalog.filter(item => categoryOf(item) === catalogCategory).length === 0 && <p className="muted">У цій категорії поки немає позицій.</p>}
             </div>
           </section>
         ) : estimateProject ? (
@@ -964,9 +969,10 @@ export default function App() {
                 const payable = roundedEstimate ? Math.floor(afterDiscount / 100) * 100 : Math.round(afterDiscount)
                 const deposit = Math.max(0, Number(estimateProject.deposit || 0))
                 const rooms = estimateProject.rooms
-                const sum = (fn: (room: Room) => number) => rooms.reduce((v, room) => v + fn(room), 0)
-                const area = sum(room => Number(roomArea(room) || 0))
-                const perimeter = sum(room => Number(roomPerimeter(room) || 0))
+                const legacyRooms = rooms.filter(room=>!room.pricing)
+                const sum = (fn: (room: Room) => number) => legacyRooms.reduce((v, room) => v + fn(room), 0)
+                const area = rooms.reduce((v,room)=>v+(roomArea(room)||0),0)
+                const perimeter = rooms.reduce((v,room)=>v+(roomPerimeter(room)||0),0)
                 const insertLength = sum(room => Number(room.components?.insertLength || 0))
                 const flyLength = sum(room => Number(room.components?.flyLength || 0))
                 const udLength = sum(room => Number(room.components?.udLength || 0))
@@ -992,6 +998,7 @@ export default function App() {
                   {qty('Магнітні решітки FLY', count(room => Number(room.components?.flyGrilles || 0)))}
                   {qty('Магнітні решітки FN-27', count(room => Number(room.components?.fn27Grilles || 0)))}
                   {qty('Магнітні решітки SK 3.0', count(room => (room.components?.sk30Items || []).reduce((v, item) => v + Number(item.grilles || 0), 0)))}
+                  {(()=>{const totals=new Map<string,{label:string;quantity:number;unit:string}>();for(const room of rooms){if(!room.pricing)continue;for(const m of calculate(room.pricing,roomArea(room)||0,roomPerimeter(room)||0).materials){if(m.unit==='м²')continue;const key=m.label+'|'+m.unit;const old=totals.get(key);totals.set(key,{...m,quantity:(old?.quantity||0)+m.quantity})}}return [...totals.values()].map(m=>metric(m.label,m.quantity,m.unit))})()}
                   <h2 style={{ marginTop: 22 }}>Оплата</h2>
                   <div className="info-row"><b>Загальна сума</b><b>{money(payable)}</b></div>
                   {percent > 0 && <div className="info-row"><span>Знижка ({percent}%)</span><b>−{money(base-afterDiscount)}</b></div>}
@@ -1221,213 +1228,11 @@ export default function App() {
                 </div>
               </div>
             })() : roomSection === 'components' ? (
-              <div style={{ display: 'grid', gap: 16 }}>
-                <div style={panelStyle}>
-                  <h2 style={{ marginTop: 0 }}>Базова стеля</h2>
-                  <div className="info-row"><span>Полотно</span><b>MSD Premium — 700 ₴/м²</b></div>
-                  <div className="info-row"><span>Площа приміщення</span><b>{roomArea(activeRoom) === null ? 'Спочатку внеси розміри' : `${formatNumber(roomArea(activeRoom)!)} м²`}</b></div>
-                  <div className="info-row"><span>Вартість полотна</span><b>{money((roomArea(activeRoom) || 0) * 700)}</b></div>
-                </div>
-
-                <div style={panelStyle}>
-                  <h2 style={{ marginTop: 0 }}>Комплектуючі профілі</h2>
-                  <button type="button" className="button secondary" style={{ width: '100%', justifyContent: 'space-between', marginBottom: 8 }}
-                    onClick={() => setStandardOpen(v => !v)}>
-                    <span>Стандартний профіль</span><span>{standardOpen ? '−' : '+'}</span>
-                  </button>
-                  {standardOpen && <div style={{ padding: '4px 8px 12px' }}>
-                    <label style={labelStyle}>Колір декоративної вставки
-                      <select style={inputStyle} value={(activeRoom.components || defaultComponents()).insertColor}
-                        onChange={e => updateComponents(activeRoom, { insertColor: e.target.value as 'white' | 'black' })}>
-                        <option value="white">Біла</option><option value="black">Чорна</option>
-                      </select>
-                    </label>
-                    <label style={labelStyle}>Довжина декоративної вставки, пог. м
-                      <input style={inputStyle} type="number" min="0" step="0.1"
-                        value={(activeRoom.components || defaultComponents()).insertLength}
-                        onChange={e => updateComponents(activeRoom, { insertLength: e.target.value })}
-                        placeholder="Введи фактичну довжину"/>
-                    </label>
-                    <label style={labelStyle}>Загальна кількість кутів стандартного профілю
-                      <input style={inputStyle} type="number" min="0" step="1"
-                        value={(activeRoom.components || defaultComponents()).standardCorners}
-                        onChange={e => updateComponents(activeRoom, { standardCorners: e.target.value })}/>
-                      <span className="muted">Перші 4 безкоштовні; кожен наступний — 400 ₴.</span>
-                    </label>
-                  </div>}
-                  <button type="button" className="button secondary" style={{ width: '100%', justifyContent: 'space-between', marginBottom: 8 }}
-                    onClick={() => {
-                      setFlyOpen(v => !v)
-                      if (!(activeRoom.components || defaultComponents()).flyEnabled) updateComponents(activeRoom, { flyEnabled: true })
-                    }}>
-                    <span>ALUTAT FLY — 1200 ₴/м</span><span>{flyOpen ? '−' : '+'}</span>
-                  </button>
-                  {flyOpen && <div style={{ padding: '4px 8px 12px' }}>
-                    <label style={labelStyle}>Довжина ALUTAT FLY, пог. м
-                      <input style={inputStyle} type="number" min="0" step="0.1"
-                        value={(activeRoom.components || defaultComponents()).flyLength}
-                        onChange={e => updateComponents(activeRoom, { flyLength: e.target.value })}/>
-                    </label>
-                    <label style={labelStyle}>Кількість кутів FLY (500 ₴ кожен)
-                      <input style={inputStyle} type="number" min="0" step="1"
-                        value={(activeRoom.components || defaultComponents()).flyCorners}
-                        onChange={e => updateComponents(activeRoom, { flyCorners: e.target.value })}/>
-                    </label>
-                    <label style={labelStyle}>Блоки живлення FLY, шт.
-                      <input style={inputStyle} type="number" min="0" step="1"
-                        value={(activeRoom.components || defaultComponents()).flyPower}
-                        onChange={e => updateComponents(activeRoom, { flyPower: e.target.value })}/>
-                    </label>
-                    <label style={labelStyle}>Магнітні решітки FLY, шт. (900 ₴ кожна)
-                      <input style={inputStyle} type="number" min="0" step="1"
-                        value={(activeRoom.components || defaultComponents()).flyGrilles}
-                        onChange={e => updateComponents(activeRoom, { flyGrilles: e.target.value })}/>
-                    </label>
-                  </div>}
-                  <button type="button" className="button secondary" style={{ width: '100%', justifyContent: 'space-between', marginBottom: 8 }}
-                    onClick={() => {
-                      setUdOpen(v => !v)
-                      if (!(activeRoom.components || defaultComponents()).udEnabled) updateComponents(activeRoom, { udEnabled: true })
-                    }}>
-                    <span>Тіньовий профіль UD — 500 ₴/м</span><span>{udOpen ? '−' : '+'}</span>
-                  </button>
-                  {udOpen && <div style={{ padding: '4px 8px 12px' }}>
-                    <label style={labelStyle}>Довжина тіньового UD, пог. м
-                      <input style={inputStyle} type="number" min="0" step="0.1"
-                        value={(activeRoom.components || defaultComponents()).udLength}
-                        onChange={e => updateComponents(activeRoom, { udLength: e.target.value })}/>
-                    </label>
-                    <label style={labelStyle}>Кількість кутів UD (400 ₴ кожен)
-                      <input style={inputStyle} type="number" min="0" step="1"
-                        value={(activeRoom.components || defaultComponents()).udCorners}
-                        onChange={e => updateComponents(activeRoom, { udCorners: e.target.value })}/>
-                    </label>
-                  </div>}
-                  <button type="button" className="button secondary" style={{ width: '100%', justifyContent: 'space-between', marginBottom: 8 }}
-                    onClick={() => setFn27Open(v => !v)}>
-                    <span>LED-профіль FN-27 — 2100 ₴/м</span><span>{fn27Open ? '−' : '+'}</span>
-                  </button>
-                  {fn27Open && <div style={{ padding: '4px 8px 12px' }}>
-                    <label style={labelStyle}>Загальна довжина FN-27, пог. м
-                      <input style={inputStyle} type="number" min="0" step="0.1"
-                        value={(activeRoom.components || defaultComponents()).fn27Length}
-                        onChange={e => updateComponents(activeRoom, { fn27Length: e.target.value })}
-                        placeholder="Введи сумарну довжину"/>
-                    </label>
-                    <label style={labelStyle}>Блоки живлення FN-27, шт. (1000 ₴ кожен)
-                      <input style={inputStyle} type="number" min="0" step="1"
-                        value={(activeRoom.components || defaultComponents()).fn27Power}
-                        onChange={e => updateComponents(activeRoom, { fn27Power: e.target.value })}/>
-                    </label>
-                    <label style={labelStyle}>Магнітні решітки FN-27, шт. (900 ₴ кожна)
-                      <input style={inputStyle} type="number" min="0" step="1"
-                        value={(activeRoom.components || defaultComponents()).fn27Grilles}
-                        onChange={e => updateComponents(activeRoom, { fn27Grilles: e.target.value })}/>
-                    </label>
-                    <p className="muted">Закупівля планками по 2 м. Розрахунок — 2100 ₴ за погонний метр закупленої довжини. Блок живлення — 1000 ₴/шт.; магнітна решітка — 900 ₴/шт.</p>
-                  </div>}
-                  <p className="muted">Розрахункова довжина периметра: {roomPerimeter(activeRoom) === null ? 'не визначена' : `${formatNumber(roomPerimeter(activeRoom)!)} м`}</p>
-                </div>
-
-                <div style={panelStyle}>
-                  <h2 style={{ marginTop: 0 }}>Карнизи</h2>
-                  <button type="button" className="button secondary" style={{ width: '100%', justifyContent: 'space-between' }}
-                    onClick={() => setSk30Open(v => !v)}>
-                    <span>ALUTAT SK 3.0 — прихований карниз</span><span>{sk30Open ? '−' : '+'}</span>
-                  </button>
-                  {sk30Open && <>
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
-                      <button className="button secondary" onClick={() => addSK30(activeRoom)}><Plus size={16}/> Додати карниз</button>
-                    </div>
-                  {(activeRoom.components?.sk30Items || []).length === 0 && <p className="muted">Карнизи ще не додані. Можна додати декілька карнизів із різною довжиною та кольором.</p>}
-                  {(activeRoom.components?.sk30Items || []).map((item, index) => (
-                    <div key={item.id} style={{ border: '1px solid #60778a', borderRadius: 12, padding: 14, marginTop: 12 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <b>Карниз №{index + 1}</b>
-                        <button className="icon-button" onClick={() => removeSK30(activeRoom, item.id)} aria-label="Видалити карниз"><X size={16}/></button>
-                      </div>
-                      <label style={labelStyle}>Колір
-                        <select style={inputStyle} value={item.color} onChange={e => updateSK30(activeRoom, item.id, { color: e.target.value as 'white' | 'black' })}>
-                          <option value="white">Білий</option><option value="black">Чорний</option>
-                        </select>
-                      </label>
-                      <label style={labelStyle}>Потрібна довжина, м
-                        <input style={inputStyle} type="number" min="0" step="0.1" value={item.length}
-                          onChange={e => updateSK30(activeRoom, item.id, { length: e.target.value })} placeholder="Наприклад, 3,0"/>
-                      </label>
-                      <label style={labelStyle}>Підсвітка
-                        <select style={inputStyle} value={(item.ledEnabled ?? Number(item.ledLength || 0) > 0) ? 'yes' : 'no'}
-                          onChange={e => updateSK30(activeRoom, item.id, { ledEnabled: e.target.value === 'yes', ...(e.target.value === 'no' ? { ledLength: '0' } : {}) })}>
-                          <option value="no">Без підсвітки</option><option value="yes">З підсвіткою</option>
-                        </select>
-                      </label>
-                      {(item.ledEnabled ?? Number(item.ledLength || 0) > 0) && <>
-                        <label style={labelStyle}>Колір світла
-                          <select style={inputStyle} value={item.ledColor || 'Тепле 3000K'} onChange={e => updateSK30(activeRoom, item.id, { ledColor: e.target.value })}>
-                            <option>Тепле 3000K</option><option>Нейтральне 4000K</option><option>Холодне 6000K</option><option>RGB</option>
-                          </select>
-                        </label>
-                        <label style={labelStyle}>Довжина LED-підсвітки, м
-                          <input style={inputStyle} type="number" min="0" step="0.1" value={item.ledLength}
-                            onChange={e => updateSK30(activeRoom, item.id, { ledLength: e.target.value })} placeholder="0"/>
-                        </label>
-                      </>}
-                      <label style={labelStyle}>Блоки живлення, шт.
-                        <input style={inputStyle} type="number" min="0" step="1" value={item.power}
-                          onChange={e => updateSK30(activeRoom, item.id, { power: e.target.value })}/>
-                      </label>
-                      <label style={labelStyle}>Магнітні решітки, шт.
-                        <input style={inputStyle} type="number" min="0" step="1" value={item.grilles}
-                          onChange={e => updateSK30(activeRoom, item.id, { grilles: e.target.value })}/>
-                      </label>
-                    </div>
-                  ))}
-                  <p className="muted">Профіль 2200 ₴/м. Підбір стандартних відрізків: 2; 2,5; 3,2 або 3,6 м — програма підбирає найменшу сумарну довжину, достатню для замовлення. LED — 250 ₴/м; колір світла обирається окремо; блок живлення — 600 ₴; магнітна решітка — 900 ₴.</p>
-                  </>}
-                </div>
-
-                <div style={panelStyle}>
-                  <h2 style={{ marginTop: 0 }}>Інші комплектуючі з каталогу</h2>
-                  <p className="muted">Додавай решітки, вентиляцію та інші позиції з категорії «Інше». Ціна й назва фіксуються на момент додавання.</p>
-                  <select style={inputStyle} defaultValue="" onChange={e => { if (e.target.value) { addCatalogItemToRoom(activeRoom, e.target.value); e.target.value = '' } }}>
-                    <option value="">Обрати позицію з каталогу…</option>
-                    {catalog.filter(item => item.category === 'Інше').map(item => <option key={item.id} value={item.id}>{item.name} — {item.price} ₴/{item.unit === 'м' ? 'м' : 'шт.'}</option>)}
-                  </select>
-                  {(activeRoom.components?.catalogItems || []).map(item => <div key={item.id} style={{ border: '1px solid #60778a', borderRadius: 10, padding: 12, marginTop: 10 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}><b>{item.name}</b><button className="icon-button" onClick={() => removeRoomCatalogItem(activeRoom, item.id)} aria-label="Видалити позицію"><X size={16}/></button></div>
-                    <div className="muted">{money(Number(item.price || 0))} / {item.unit}</div>
-                    <label style={labelStyle}>Кількість, {item.unit}
-                      <input style={inputStyle} type="number" min="0" step={item.unit === 'м' ? '0.1' : '1'} value={item.quantity} onChange={e => updateRoomCatalogItem(activeRoom, item.id, { quantity: e.target.value })}/>
-                    </label>
-                    <div className="info-row"><span>Сума</span><b>{money(Number(item.price || 0) * Number(item.quantity || 0))}</b></div>
-                  </div>)}
-                  {!(activeRoom.components?.catalogItems || []).length && <p className="muted">Поки що позиції не додані.</p>}
-                </div>
-
-                <div style={panelStyle}>
-                  <h2 style={{ marginTop: 0 }}>Попередній кошторис кімнати</h2>
-                  {(() => {
-                    const e = componentEstimate(activeRoom)
-                    return <>
-                      <div className="info-row"><span>Полотно MSD Premium ({formatNumber(e.area)} м²)</span><b>{money(e.fabric)}</b></div>
-                      {e.insertLength > 0 && <div className="info-row"><span>Декоративна вставка ({formatNumber(e.insertLength)} пог. м)</span><b>{money(e.insert)}</b></div>}
-                      {e.fly > 0 && <div className="info-row"><span>ALUTAT FLY ({formatNumber(Number((activeRoom.components || defaultComponents()).flyLength || 0))} пог. м; планки по 2 м)</span><b>{money(e.fly)}</b></div>}
-                      {e.ud > 0 && <div className="info-row"><span>Тіньовий профіль UD ({formatNumber(Number((activeRoom.components || defaultComponents()).udLength || 0))} пог. м)</span><b>{money(e.ud)}</b></div>}
-                      {e.standardCorners > 0 && <div className="info-row"><span>Додаткові кути стандартного профілю</span><b>{money(e.standardCorners)}</b></div>}
-                      {e.flyCornersCost > 0 && <div className="info-row"><span>Кути FLY ({(activeRoom.components || defaultComponents()).flyCorners} × 500 ₴)</span><b>{money(e.flyCornersCost)}</b></div>}
-                      {e.udCornersCost > 0 && <div className="info-row"><span>Кути UD ({(activeRoom.components || defaultComponents()).udCorners} × 400 ₴)</span><b>{money(e.udCornersCost)}</b></div>}
-                      {e.skDetails.filter(item => item.total > 0).map((item, index) => <div key={item.id} className="info-row"><span>SK 3.0 №{index + 1} ({item.color === 'white' ? 'білий' : 'чорний'}{(item.ledEnabled ?? Number(item.ledLength || 0) > 0) ? `, з підсвіткою ${item.ledColor || 'Тепле 3000K'}` : ', без підсвітки'}) та аксесуари</span><b>{money(item.total)}</b></div>)}
-                      {e.fn27 > 0 && <div className="info-row"><span>FN-27</span><b>{money(e.fn27)}</b></div>}
-                      {e.fn27Power > 0 && <div className="info-row"><span>Блоки живлення FN-27 ({(activeRoom.components || defaultComponents()).fn27Power} × 1000 ₴)</span><b>{money(e.fn27Power)}</b></div>}
-                      {e.fn27Grilles > 0 && <div className="info-row"><span>Магнітні решітки FN-27 ({(activeRoom.components || defaultComponents()).fn27Grilles} × 900 ₴)</span><b>{money(e.fn27Grilles)}</b></div>}
-                      {e.flyPower > 0 && <div className="info-row"><span>Живлення FLY</span><b>{money(e.flyPower)}</b></div>}
-                      {e.flyGrilles > 0 && <div className="info-row"><span>Магнітні решітки FLY ({(activeRoom.components || defaultComponents()).flyGrilles} × 900 ₴)</span><b>{money(e.flyGrilles)}</b></div>}
-                      {e.catalogItems.filter(item => Number(item.quantity || 0) > 0).map(item => <div key={item.id} className="info-row"><span>{item.name} ({item.quantity} {item.unit})</span><b>{money(Number(item.price || 0) * Number(item.quantity || 0))}</b></div>)}
-                      <div className="room-area"><span>Разом попередньо</span><strong>{money(e.total)}</strong></div>
-                    </>
-                  })()}
-                </div>
-              </div>
+              activeRoom.pricing ? <RoomComponents pricing={activeRoom.pricing} catalog={availableCatalog} area={roomArea(activeRoom)} perimeter={roomPerimeter(activeRoom)} onChange={pricing=>updateRoom(activeRoom.id,{pricing})}/> :
+              <div className="panel form-panel"><h2>Комплектуючі · попередня версія</h2><p>Старий кошторис збережено за попередніми тарифами. Для редагування комплектуючих переведи кімнату на новий каталог. Перевір суму після переходу.</p>
+              {estimateRows({...active,rooms:[activeRoom]})[0].rows.map((r,i)=><div className="info-row" key={i}><span>{r.label}</span><b>{money(r.amount)}</b></div>)}
+              <div className="room-area"><span>Старий кошторис</span><strong>{money(componentEstimate(activeRoom).total)}</strong></div>
+              <button className="button" onClick={()=>{const pricing=convertLegacyRoom(activeRoom);const total=calculate(pricing,roomArea(activeRoom)||0,roomPerimeter(activeRoom)||0).total;if(confirm(`Перейти на новий каталог? Старий кошторис: ${money(componentEstimate(activeRoom).total)}. Після переходу: ${money(total)}. Перевір кількості та ціни.`))updateRoom(activeRoom.id,{pricing})}}>Перейти до нового каталогу</button></div>
             ) : (
             <>
             <div style={{ ...panelStyle, marginBottom: 18 }}>
