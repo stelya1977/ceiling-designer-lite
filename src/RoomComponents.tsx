@@ -1,3 +1,4 @@
+import NumericInput from './NumericInput'
 import { calculate, categoryOf, newSelection, num, snapshot, stockPlan, type CatalogItem, type RoomPricing, type Selection, type Category } from './pricing'
 
 type Props = { pricing: RoomPricing; catalog: CatalogItem[]; area: number | null; perimeter: number | null; onChange:(p:RoomPricing)=>void }
@@ -7,7 +8,7 @@ export default function RoomComponents({pricing:p,catalog,area,perimeter,onChang
  const e=calculate(p,area||0,perimeter||0)
  const update=(patch:Partial<RoomPricing>)=>onChange({...p,...patch})
  const edit=(id:string,patch:Partial<Selection>)=>update({items:p.items.map(x=>x.id===id?{...x,...patch}:x)})
- const input=(label:string,value:string,change:(s:string)=>void,integer=false)=><label>{label}<input type="number" min="0" step={integer?'1':'0.01'} value={value} onChange={ev=>change(ev.target.value)}/></label>
+ const input=(label:string,value:string,change:(s:string)=>void,integer=false)=><label>{label}<NumericInput integer={integer} value={value} onChange={change}/></label>
  const add=(id:string)=>{const item=catalog.find(x=>x.id===id);if(item)update({items:[...p.items,newSelection(item,crypto.randomUUID())]})}
  const refresh=()=>{
    if(!confirm('Оновити тарифи та параметри вибраних позицій за поточним каталогом? Сума кошторису може змінитися.'))return

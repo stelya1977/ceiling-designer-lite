@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useCloud } from './cloud'
 import RoomComponents from './RoomComponents'
+import NumericInput from './NumericInput'
 import { categories, categoryOf, effectiveCatalog, newPricing, newSelection, calculate, snapshot, num, type DetailedPriceRow, type CatalogCategory, type CatalogItem, type RoomPricing, type Unit } from './pricing'
 import {
   Plus, Search, ChevronRight, House, ClipboardList, Layers3, Settings,
@@ -204,33 +205,6 @@ function formatNumber(n: number) {
   return n.toFixed(2).replace('.', ',')
 }
 
-// A text-backed measurement input avoids native number-input locale restrictions.
-// Keep the typing buffer (including a trailing decimal separator) separate from
-// the persisted geometry. Persist only normalized, finite non-negative numbers.
-function MeasurementInput({ value, onChange, placeholder, style }: {
-  value: string | number | undefined
-  onChange: (value: string) => void
-  placeholder: string
-  style: CSSProperties
-}) {
-  const stored = value == null ? '' : String(value).replace('.', ',')
-  const [draft, setDraft] = useState<string | null>(null)
-  return <input type="text" inputMode="decimal" autoComplete="off" spellCheck={false}
-    style={style} value={draft ?? stored} placeholder={placeholder}
-    onFocus={() => setDraft(stored)}
-    onChange={e => {
-      const next = e.target.value
-      if (!/^\d*(?:[.,]\d*)?$/.test(next)) return
-      const normalized = next.replace(',', '.')
-      if (next !== '' && normalized !== '.' && !Number.isFinite(Number(normalized))) return
-      setDraft(next)
-      if (next === '') onChange('')
-      else if (normalized !== '.') onChange(String(Number(normalized)))
-    }}
-    onBlur={() => setDraft(null)}
-    onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }} />
-}
-
 export default function App() {
   const [projects, setProjects] = useState<Project[]>(readProjects)
   const [catalog, setCatalog] = useState<CatalogItem[]>(readCatalog)
@@ -277,7 +251,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.14')
+        setUpdateAvailable(event.data.version !== '0.7.15')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -618,7 +592,7 @@ export default function App() {
     const base = sections.reduce((sum, section) => sum + section.total, 0)
     const discounted = base * (1 - Math.max(0, Math.min(100, Number(discountPercent || 0))) / 100)
     const total = roundedEstimate ? Math.floor(discounted / 100) * 100 : Math.round(discounted)
-    const deposit = Math.max(0, Number(estimateProject.deposit || 0))
+    const deposit = num(estimateProject.deposit)
     const balance = Math.max(0, total - deposit)
     const moneyText = (n: number) => `${Math.round(n).toLocaleString('uk-UA')} грн`
     const filename = exportName(estimateProject, detailed ? 'Детальний кошторис' : 'Кошторис по кімнатах')
@@ -805,7 +779,7 @@ export default function App() {
     const percent = Math.max(0, Math.min(100, Number(discountPercent || 0)))
     const afterDiscount = base * (1 - percent / 100)
     const total = roundedEstimate ? Math.floor(afterDiscount / 100) * 100 : Math.round(afterDiscount)
-    const deposit = Math.max(0, Number(estimateProject.deposit || 0))
+    const deposit = num(estimateProject.deposit)
     const balance = Math.max(0, total - deposit)
     const moneyText = (n: number) => `${Math.round(n).toLocaleString('uk-UA')} грн`
     const rowsHtml = [...grouped.values()].map(row => `<tr><td>${escapeHtml(row.label)}</td><td>${moneyText(row.amount)}</td></tr>`).join('')
@@ -948,7 +922,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.14</small>
+          <small>Версія 0.7.15</small>
         </div>
       </aside>
 
@@ -958,7 +932,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.14</small>
+            <small>v0.7.15</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -992,20 +966,20 @@ export default function App() {
               <h2>{editingCatalogId ? 'Редагувати позицію' : 'Додати позицію'}</h2>
               <label>Назва<input value={catalogDraft.name} onChange={e => setCatalogDraft(v => ({ ...v, name: e.target.value }))} placeholder="Назва виробу"/></label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <label>Ціна<input type="number" min="0" value={catalogDraft.price} onChange={e => setCatalogDraft(v => ({ ...v, price: e.target.value }))}/></label>
+                <label>Ціна<NumericInput value={catalogDraft.price} onChange={value => setCatalogDraft(v => ({ ...v, price: value }))}/></label>
                 <label>Одиниця<select value={catalogDraft.unit} disabled={catalogCategory==='Полотна'||editingCatalogId==='standard-profile'||editingCatalogId==='decorative-insert'} onChange={e => setCatalogDraft(v => ({ ...v, unit: e.target.value as Unit }))}><option value="м">За метр</option><option value="шт.">За штуку</option><option value="м²">За м²</option></select></label>
               </div>
               <label>Довжина заводської планки / варіанти довжин<input value={catalogDraft.stockLength} onChange={e => setCatalogDraft(v => ({ ...v, stockLength: e.target.value }))} placeholder="Наприклад, 2 або 2; 2,5; 3,2"/></label>
               <h3 style={{ margin: '8px 0 0' }}>Оплата кутів</h3>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <label>Ціна за один кут, грн<input type="number" min="0" value={catalogDraft.cornerPrice} onChange={e => setCatalogDraft(v => ({ ...v, cornerPrice: e.target.value }))}/></label>
-                <label>Безкоштовних кутів<input type="number" min="0" step="1" value={catalogDraft.freeCorners} onChange={e => setCatalogDraft(v => ({ ...v, freeCorners: e.target.value }))}/></label>
+                <label>Ціна за один кут, грн<NumericInput value={catalogDraft.cornerPrice} onChange={value => setCatalogDraft(v => ({ ...v, cornerPrice: value }))}/></label>
+                <label>Безкоштовних кутів<NumericInput integer value={catalogDraft.freeCorners} onChange={value => setCatalogDraft(v => ({ ...v, freeCorners: value }))}/></label>
               </div>
               <label>Розрахунок ціни за довжиною<select value={catalogDraft.billStock?'stock':'actual'} onChange={e=>setCatalogDraft(v=>({...v,billStock:e.target.value==='stock'}))}><option value="actual">Фактична довжина</option><option value="stock">Закуплена довжина (цілі планки)</option></select></label>
               {(['Профілі','Карнизи','Освітлення основне'].includes(catalogCategory))&&<>
-                <label>LED-підсвітка, грн/м (порожньо — не передбачено)<input type="number" min="0" value={catalogDraft.ledPrice} onChange={e=>setCatalogDraft(v=>({...v,ledPrice:e.target.value}))}/></label>
-                <label>Блок живлення, грн/шт. (порожньо — не передбачено)<input type="number" min="0" value={catalogDraft.powerPrice} onChange={e=>setCatalogDraft(v=>({...v,powerPrice:e.target.value}))}/></label>
-                <label>Магнітна решітка, грн/шт. (порожньо — не передбачено)<input type="number" min="0" value={catalogDraft.grillePrice} onChange={e=>setCatalogDraft(v=>({...v,grillePrice:e.target.value}))}/></label>
+                <label>LED-підсвітка, грн/м (порожньо — не передбачено)<NumericInput value={catalogDraft.ledPrice} onChange={value=>setCatalogDraft(v=>({...v,ledPrice:value}))}/></label>
+                <label>Блок живлення, грн/шт. (порожньо — не передбачено)<NumericInput value={catalogDraft.powerPrice} onChange={value=>setCatalogDraft(v=>({...v,powerPrice:value}))}/></label>
+                <label>Магнітна решітка, грн/шт. (порожньо — не передбачено)<NumericInput value={catalogDraft.grillePrice} onChange={value=>setCatalogDraft(v=>({...v,grillePrice:value}))}/></label>
               </>}
               <label>Примітки та додаткові тарифи<textarea value={catalogDraft.description} onChange={e => setCatalogDraft(v => ({ ...v, description: e.target.value }))} rows={3}/></label>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -1039,7 +1013,7 @@ export default function App() {
                 const percent = Math.max(0, Math.min(100, Number(discountPercent || 0)))
                 const afterDiscount = base * (1 - percent / 100)
                 const payable = roundedEstimate ? Math.floor(afterDiscount / 100) * 100 : Math.round(afterDiscount)
-                const deposit = Math.max(0, Number(estimateProject.deposit || 0))
+                const deposit = num(estimateProject.deposit)
                 const rooms = estimateProject.rooms
                 const legacyRooms = rooms.filter(room=>!room.pricing)
                 const sum = (fn: (room: Room) => number) => legacyRooms.reduce((v, room) => v + fn(room), 0)
@@ -1075,7 +1049,7 @@ export default function App() {
                   <div className="info-row"><b>Загальна сума</b><b>{money(payable)}</b></div>
                   {percent > 0 && <div className="info-row"><span>Знижка ({percent}%)</span><b>−{money(base-afterDiscount)}</b></div>}
                   <label style={{ ...labelStyle, marginTop: 8 }}>Внесений завдаток, грн
-                    <input style={inputStyle} type="number" min="0" step="1" value={estimateProject.deposit || ''} onChange={e => updateEstimateDeposit(e.target.value)} placeholder="Введи суму завдатку" />
+                    <NumericInput key={estimateProject.id + "-deposit"} style={inputStyle} integer value={estimateProject.deposit || ''} onChange={updateEstimateDeposit} placeholder="Введи суму завдатку" />
                   </label>
                   <div className="info-row" style={{ fontSize: 18 }}><b>Залишок до оплати</b><b style={{ color: '#ffc247' }}>{money(Math.max(0, payable - deposit))}</b></div>
                   {deposit > payable && <p className="muted">Увага: завдаток перевищує суму кошторису.</p>}
@@ -1084,7 +1058,7 @@ export default function App() {
                     <button className="button secondary" onClick={() => setDiscountOpen(v => !v)}>Коригування</button>
                   </div>
                   {discountOpen && <div style={{ display: 'flex', gap: 12, alignItems: 'end', flexWrap: 'wrap', padding: 12, background: '#1a2834', borderRadius: 10, marginTop: 14 }}>
-                    <label style={{ ...labelStyle, flex: '1 1 150px', marginBottom: 0 }}>Знижка, %<input style={inputStyle} type="number" min="0" max="100" step="0.5" value={discountPercent} onChange={e => { setDiscountPercent(e.target.value); setRoundedEstimate(false) }}/></label>
+                    <label style={{ ...labelStyle, flex: '1 1 150px', marginBottom: 0 }}>Знижка, %<NumericInput style={inputStyle} max={100} value={discountPercent} onChange={value => { setDiscountPercent(value); setRoundedEstimate(false) }}/></label>
                     <span className="muted">Застосовується до загальної суми</span>
                   </div>}
                 </>
@@ -1337,13 +1311,13 @@ export default function App() {
               <div style={panelStyle}>
                 <h2 style={{ marginTop: 0 }}>Розміри приміщення</h2>
                 <label style={labelStyle}>Довжина, м
-                  <MeasurementInput key={activeRoom.id + '-length'} style={inputStyle}
+                  <NumericInput key={activeRoom.id + '-length'} style={inputStyle}
                     value={activeRoom.length}
                     onChange={value => updateRoom(activeRoom.id, { length: value === '' ? undefined : Number(value) })}
                     placeholder="Наприклад, 5,20"/>
                 </label>
                 <label style={labelStyle}>Ширина, м
-                  <MeasurementInput key={activeRoom.id + '-width'} style={inputStyle}
+                  <NumericInput key={activeRoom.id + '-width'} style={inputStyle}
                     value={activeRoom.width}
                     onChange={value => updateRoom(activeRoom.id, { width: value === '' ? undefined : Number(value) })}
                     placeholder="Наприклад, 3,60"/>
@@ -1358,7 +1332,7 @@ export default function App() {
                   {diagonalKeys(activeRoom.sides.length).map(diagonal => (
                     <label key={diagonal.key} style={labelStyle}>
                       {diagonal.label}, м
-                      <MeasurementInput key={activeRoom.id + diagonal.key} style={inputStyle}
+                      <NumericInput key={activeRoom.id + diagonal.key} style={inputStyle}
                         value={(activeRoom.diagonals || {})[diagonal.key] || ''}
                         onChange={value => updateDiagonal(activeRoom, diagonal.key, value)}
                         placeholder="0,00"/>
@@ -1455,7 +1429,7 @@ export default function App() {
                   {activeRoom.sides.map(side => (
                     <label key={side.id} style={labelStyle}>
                       {side.label}, м
-                      <MeasurementInput key={activeRoom.id + side.id} style={inputStyle} value={side.length}
+                      <NumericInput key={activeRoom.id + side.id} style={inputStyle} value={side.length}
                         onChange={value => updateSide(activeRoom, side.id, value)} placeholder="0,00"/>
                     </label>
                   ))}
@@ -1466,7 +1440,7 @@ export default function App() {
                   {diagonalKeys(activeRoom.sides.length).map(diagonal => (
                     <label key={diagonal.key} style={labelStyle}>
                       {diagonal.label}, м
-                      <MeasurementInput key={activeRoom.id + diagonal.key} style={inputStyle}
+                      <NumericInput key={activeRoom.id + diagonal.key} style={inputStyle}
                         value={(activeRoom.diagonals || {})[diagonal.key] || ''}
                         onChange={value => updateDiagonal(activeRoom, diagonal.key, value)}
                         placeholder="0,00"/>
