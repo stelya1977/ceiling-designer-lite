@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useCloud } from './cloud'
 import RoomComponents from './RoomComponents'
 import NumericInput from './NumericInput'
+import { activeStatuses, localDate, projectDate, payment, archive, restore, matchesDate, calendarDays, shiftMonth, type Workflow } from './projectWorkflow'
 import { categories, categoryOf, effectiveCatalog, newPricing, newSelection, calculate, snapshot, num, type DetailedPriceRow, type CatalogCategory, type CatalogItem, type RoomPricing, type Unit } from './pricing'
 import {
   Plus, Search, ChevronRight, House, ClipboardList, Layers3, Settings,
-  X, ArrowLeft, Trash2, Ruler, RotateCcw, MapPin, Navigation, ImagePlus, Pencil, Sparkles, Download
+  X, ArrowLeft, Trash2, Ruler, RotateCcw, MapPin, Navigation, ImagePlus, Pencil, Sparkles, Download, Archive, CalendarDays
 } from 'lucide-react'
 
 type Side = { id: string; label: string; length: string }
@@ -94,7 +95,7 @@ function readCatalog(): CatalogItem[] {
   } catch { return defaultCatalog }
 }
 
-type Project = {
+type Project = Workflow & {
   id: string
   client: string
   phone: string
@@ -188,14 +189,6 @@ function readProjects(): Project[] {
 
 function escapeHtml(value: unknown) { return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') }
 
-function localDate(value?: string) {
-  const d = value ? new Date(value) : new Date()
-  if (!Number.isFinite(d.getTime())) return localDate()
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-}
-function projectDate(project: Pick<Project,'measurementDate'|'created'>) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(project.measurementDate || '') ? project.measurementDate! : localDate(project.created)
-}
 function exportName(project: Project, kind: string) {
   const [, month, day] = projectDate(project).split('-')
   const name = (project.client || project.id || 'Об’єкт').replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ').replace(/\s+/g,' ').trim().replace(/[. ]+$/g,'').slice(0,100) || 'Об’єкт'
@@ -215,6 +208,14 @@ export default function App() {
   const emptyCatalogDraft = { category: 'Профілі' as CatalogCategory, name: '', price: '', unit: 'м' as Unit, stockLength: '', cornerPrice: '0', freeCorners: '0', description: '', billStock: false, ledPrice: '', powerPrice: '', grillePrice: '' }
   const [catalogDraft, setCatalogDraft] = useState(emptyCatalogDraft)
   const [query, setQuery] = useState('')
+  const [projectView, setProjectView] = useState<'active'|'archive'|'calendar'>('active')
+  const [archiveFilter, setArchiveFilter] = useState<'all'|'paid'|'unpaid'>('all')
+  const [calendarMonth, setCalendarMonth] = useState(localDate().slice(0,7))
+  const [calendarDate, setCalendarDate] = useState(localDate())
+  const [calendarScope, setCalendarScope] = useState<'day'|'month'|'year'>('month')
+  const [calendarYear, setCalendarYear] = useState(localDate().slice(0,4))
+  const [calendarFilter, setCalendarFilter] = useState<'all'|'active'|'archive'>('all')
+  const [measurementDate, setMeasurementDate] = useState(localDate())
   const [creating, setCreating] = useState(false)
   const [active, setActive] = useState<Project | null>(null)
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null)
@@ -237,8 +238,8 @@ export default function App() {
   const [estimateProject, setEstimateProject] = useState<Project | null>(null)
   const [estimateReturnToCreate, setEstimateReturnToCreate] = useState(false)
   const [discountOpen, setDiscountOpen] = useState(false)
-  const [discountPercent, setDiscountPercent] = useState('0')
-  const [roundedEstimate, setRoundedEstimate] = useState(false)
+  const discountPercent = estimateProject?.discountPercent || '0'
+  const roundedEstimate = !!estimateProject?.roundedEstimate
 
   const [networkOnline, setNetworkOnline] = useState(navigator.onLine)
   const [offlineReady, setOfflineReady] = useState(!!navigator.serviceWorker?.controller)
@@ -251,7 +252,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.15')
+        setUpdateAvailable(event.data.version !== '0.7.16')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -312,17 +313,38 @@ export default function App() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
-  const filtered = useMemo(
-    () => projects.filter(p =>
-      `${p.client} ${p.phone} ${p.address} ${p.id}`.toLowerCase().includes(query.toLowerCase())
-    ),
-    [projects, query]
-  )
+  function projectPayment(p: Project) {
+    return payment(estimateRows(p).reduce((sum,section)=>sum+section.total,0),p)
+  }
+  const liveProjects = projects.filter(p=>!p.archivedAt)
+  const archivedProjects = projects.filter(p=>!!p.archivedAt)
+  const calendarKey = calendarScope==='year'?calendarYear:calendarScope==='month'?calendarMonth:calendarDate
+  const selectedProjects = projectView==='active'?liveProjects:projectView==='archive'?archivedProjects.filter(p=>archiveFilter==='all'||(!!p.completedAt&&(archiveFilter==='paid'?projectPayment(p).paid:!projectPayment(p).paid))):projects.filter(p=>matchesDate(p,calendarScope,calendarKey)&&(calendarFilter==='all'||(calendarFilter==='archive'?!!p.archivedAt:!p.archivedAt)))
+  const filtered = selectedProjects.filter(p=>`${p.client} ${p.phone} ${p.address} ${p.id}`.toLowerCase().includes(query.toLowerCase()))
+  const unpaidProjects = archivedProjects.filter(p=>p.completedAt&&!projectPayment(p).paid)
+  const debts = unpaidProjects.reduce((sum,p)=>sum+projectPayment(p).balance,0)
+  function navigateProjects(view:'active'|'archive'|'calendar') {
+    if(creating && (client.trim()||phone.trim()||address.trim()||roomName.trim()||rooms.length) && !confirm('Вийти зі створення об’єкта? Незбережена чернетка буде втрачена.'))return
+    setProjectView(view);setCatalogPage(false);setCreating(false);setEstimateProject(null);setActive(null);setActiveRoomId(null);setQuery('')
+  }
+  function archiveActive(complete:boolean) {
+    if(!active || active.archivedAt)return
+    if(!confirm(complete?'Позначити об’єкт виконаним і перенести в архів?':'Перенести об’єкт в архів без позначки виконання?'))return
+    syncProject(archive(active,new Date().toISOString(),complete))
+    setProjectView('archive');setArchiveFilter('all')
+  }
+  function markPayment(p:Project, paid:boolean) {
+    const info=projectPayment(p)
+    if(!p.completedAt || (paid && info.total<=0))return
+    if(!confirm(paid?`Підтвердити отримання залишку ${money(info.balance)}?`:'Скасувати позначку остаточної оплати? Завдаток залишиться.'))return
+    syncProject({...p,finalPayment:paid?info.final+info.balance:0})
+  }
 
   function resetForm() {
     setClient('')
     setPhone('')
     setAddress('')
+    setMeasurementDate(localDate())
     setRooms([])
     setRoomName('')
   }
@@ -345,7 +367,7 @@ export default function App() {
       address: address.trim(),
       status: 'Новий',
       created: new Date().toISOString(),
-      measurementDate: localDate(),
+      measurementDate: measurementDate || localDate(),
       rooms
     }
     setProjects(prev => [p, ...prev])
@@ -576,8 +598,13 @@ export default function App() {
     setEstimateProject({ ...project, measurementDate: projectDate(project) })
     setEstimateReturnToCreate(fromCreate)
     setDiscountOpen(false)
-    setDiscountPercent('0')
-    setRoundedEstimate(false)
+  }
+
+  function updateEstimateTerms(percent:string,rounded:boolean) {
+    if(!estimateProject)return
+    const updated={...estimateProject,discountPercent:percent,roundedEstimate:rounded}
+    setEstimateProject(updated)
+    if(updated.id!=='Чернетка'){setProjects(prev=>prev.map(p=>p.id===updated.id?updated:p));setActive(prev=>prev?.id===updated.id?updated:prev)}
   }
 
   function formatMeasurementDate(value?: string) {
@@ -590,15 +617,16 @@ export default function App() {
     if (!estimateProject) return
     const sections = estimateRows(estimateProject)
     const base = sections.reduce((sum, section) => sum + section.total, 0)
-    const discounted = base * (1 - Math.max(0, Math.min(100, Number(discountPercent || 0))) / 100)
+    const discounted = base * (1 - Math.min(100,num(discountPercent)) / 100)
     const total = roundedEstimate ? Math.floor(discounted / 100) * 100 : Math.round(discounted)
     const deposit = num(estimateProject.deposit)
-    const balance = Math.max(0, total - deposit)
+    const final = payment(base,estimateProject).final
+    const balance = Math.max(0, total - deposit - final)
     const moneyText = (n: number) => `${Math.round(n).toLocaleString('uk-UA')} грн`
     const filename = exportName(estimateProject, detailed ? 'Детальний кошторис' : 'Кошторис по кімнатах')
     const preciseMoney = (n:number) => `${n.toLocaleString('uk-UA',{maximumFractionDigits:2})} грн`
     const rowsHtml = sections.map(section => `<section class="room"><h2>${escapeHtml(section.room.name)}</h2><table>${detailed ? '<thead><tr><th>Найменування</th><th>Кількість</th><th>Ціна за од.</th><th>Сума</th></tr></thead>' : ''}<tbody>${detailed ? section.detailedRows.map(row => `<tr><td>${escapeHtml(row.label)}</td><td>${row.quantity.toLocaleString('uk-UA',{maximumFractionDigits:3})} ${escapeHtml(row.unit)}</td><td>${preciseMoney(row.unitPrice)}</td><td>${preciseMoney(row.amount)}</td></tr>`).join('') : section.rows.map(row => `<tr><td>${escapeHtml(row.label)}</td><td>${moneyText(row.amount)}</td></tr>`).join('')}<tr class="subtotal"><td colspan="${detailed?3:1}">Разом за кімнату</td><td>${detailed?preciseMoney(section.total):moneyText(section.total)}</td></tr></tbody></table></section>`).join('')
-    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${escapeHtml(filename)}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;background:#fff;padding:32px;max-width:900px;margin:auto}h1{font-size:28px;margin:0 0 8px}p{color:#596675;margin:4px 0 24px}.room{margin:22px 0;page-break-inside:auto}tr{break-inside:avoid}thead{display:table-header-group}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:8px}table{width:100%;border-collapse:collapse}th{text-align:left;background:#f5f7f9;padding:8px 4px}th:not(:first-child),td:not(:first-child){text-align:right;white-space:nowrap}td{padding:9px 4px;border-bottom:1px solid #e4e8ec}td:last-child{text-align:right;white-space:nowrap;font-weight:600}.subtotal td{font-weight:700;background:#f5f7f9}.total{margin-top:26px;padding:18px;background:#f5f7f9;font-size:24px;font-weight:700;text-align:right}.discount{text-align:right;color:#596675}@media print{body{padding:0}}</style></head><body><h1>${detailed?'Детальний кошторис':'Кошторис'} · НСК — Натяжні Стелі Коломия</h1><p>Замовник: ${escapeHtml(estimateProject.client || '—')} · Телефон: ${escapeHtml(estimateProject.phone || '—')}<br>Об’єкт: ${escapeHtml(estimateProject.address || '—')}<br>Дата заміру: ${formatMeasurementDate(estimateProject.measurementDate)}</p>${rowsHtml}${Number(discountPercent)>0 ? `<p class="discount">Знижка ${discountPercent}%: −${moneyText(base-discounted)}</p>` : ''}<div class="total">Вартість замовлення: ${moneyText(total)}<br><small>Завдаток: ${moneyText(deposit)}<br>Залишок до оплати: ${moneyText(balance)}</small></div></body></html>`
+    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${escapeHtml(filename)}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;background:#fff;padding:32px;max-width:900px;margin:auto}h1{font-size:28px;margin:0 0 8px}p{color:#596675;margin:4px 0 24px}.room{margin:22px 0;page-break-inside:auto}tr{break-inside:avoid}thead{display:table-header-group}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:8px}table{width:100%;border-collapse:collapse}th{text-align:left;background:#f5f7f9;padding:8px 4px}th:not(:first-child),td:not(:first-child){text-align:right;white-space:nowrap}td{padding:9px 4px;border-bottom:1px solid #e4e8ec}td:last-child{text-align:right;white-space:nowrap;font-weight:600}.subtotal td{font-weight:700;background:#f5f7f9}.total{margin-top:26px;padding:18px;background:#f5f7f9;font-size:24px;font-weight:700;text-align:right}.discount{text-align:right;color:#596675}@media print{body{padding:0}}</style></head><body><h1>${detailed?'Детальний кошторис':'Кошторис'} · НСК — Натяжні Стелі Коломия</h1><p>Замовник: ${escapeHtml(estimateProject.client || '—')} · Телефон: ${escapeHtml(estimateProject.phone || '—')}<br>Об’єкт: ${escapeHtml(estimateProject.address || '—')}<br>Дата заміру: ${formatMeasurementDate(estimateProject.measurementDate)}</p>${rowsHtml}${Number(discountPercent)>0 ? `<p class="discount">Знижка ${discountPercent}%: −${moneyText(base-discounted)}</p>` : ''}<div class="total">Вартість замовлення: ${moneyText(total)}<br><small>Завдаток: ${moneyText(deposit)}<br>${final>0?`Остаточна оплата: ${moneyText(final)}<br>`:''}Залишок до оплати: ${moneyText(balance)}</small></div></body></html>`
     if (format === 'pdf') {
       const win = window.open('', '_blank')
       if (!win) { alert('Дозволь спливаючі вікна для збереження PDF.'); return }
@@ -776,15 +804,16 @@ export default function App() {
       grouped.set(label, current)
     }))
     const base = sections.reduce((sum, section) => sum + section.total, 0)
-    const percent = Math.max(0, Math.min(100, Number(discountPercent || 0)))
+    const percent = Math.min(100,num(discountPercent))
     const afterDiscount = base * (1 - percent / 100)
     const total = roundedEstimate ? Math.floor(afterDiscount / 100) * 100 : Math.round(afterDiscount)
     const deposit = num(estimateProject.deposit)
-    const balance = Math.max(0, total - deposit)
+    const final = payment(base,estimateProject).final
+    const balance = Math.max(0, total - deposit - final)
     const moneyText = (n: number) => `${Math.round(n).toLocaleString('uk-UA')} грн`
     const rowsHtml = [...grouped.values()].map(row => `<tr><td>${escapeHtml(row.label)}</td><td>${moneyText(row.amount)}</td></tr>`).join('')
     const roomsHtml = `<p>Кількість кімнат: ${estimateProject.rooms.length}</p>`
-    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${escapeHtml(filename)}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;background:#fff;padding:32px;max-width:900px;margin:auto}h1{font-size:28px;margin:0 0 8px}p{color:#596675;margin:4px 0 18px}table{width:100%;border-collapse:collapse;margin-top:20px}td{padding:11px 5px;border-bottom:1px solid #e4e8ec}td:last-child{text-align:right;white-space:nowrap;font-weight:700}.total{margin-top:26px;padding:18px;background:#f5f7f9;font-size:23px;font-weight:700;text-align:right}.small{font-size:15px;line-height:1.7}@media print{body{padding:0}}</style></head><body><h1>Загальний кошторис об’єкта</h1><p>НСК — Натяжні Стелі Коломия<br>Замовник: ${escapeHtml(estimateProject.client || '—')} · Телефон: ${escapeHtml(estimateProject.phone || '—')}<br>Адреса: ${escapeHtml(estimateProject.address || '—')}<br>Дата заміру: ${formatMeasurementDate(estimateProject.measurementDate)}<br>${roomsHtml}</p><table>${rowsHtml}</table>${percent > 0 ? `<p>Знижка ${percent}%: −${moneyText(base-afterDiscount)}</p>` : ''}<div class="total">Разом за об’єкт: ${moneyText(total)}<div class="small">Завдаток: ${moneyText(deposit)}<br>Залишок до оплати: ${moneyText(balance)}</div></div></body></html>`
+    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${escapeHtml(filename)}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;background:#fff;padding:32px;max-width:900px;margin:auto}h1{font-size:28px;margin:0 0 8px}p{color:#596675;margin:4px 0 18px}table{width:100%;border-collapse:collapse;margin-top:20px}td{padding:11px 5px;border-bottom:1px solid #e4e8ec}td:last-child{text-align:right;white-space:nowrap;font-weight:700}.total{margin-top:26px;padding:18px;background:#f5f7f9;font-size:23px;font-weight:700;text-align:right}.small{font-size:15px;line-height:1.7}@media print{body{padding:0}}</style></head><body><h1>Загальний кошторис об’єкта</h1><p>НСК — Натяжні Стелі Коломия<br>Замовник: ${escapeHtml(estimateProject.client || '—')} · Телефон: ${escapeHtml(estimateProject.phone || '—')}<br>Адреса: ${escapeHtml(estimateProject.address || '—')}<br>Дата заміру: ${formatMeasurementDate(estimateProject.measurementDate)}<br>${roomsHtml}</p><table>${rowsHtml}</table>${percent > 0 ? `<p>Знижка ${percent}%: −${moneyText(base-afterDiscount)}</p>` : ''}<div class="total">Разом за об’єкт: ${moneyText(total)}<div class="small">Завдаток: ${moneyText(deposit)}<br>${final>0?`Остаточна оплата: ${moneyText(final)}<br>`:''}Залишок до оплати: ${moneyText(balance)}</div></div></body></html>`
     if (format === 'pdf') {
       const win = window.open('', '_blank')
       if (!win) { alert('Дозволь спливаючі вікна для збереження PDF.'); return }
@@ -914,15 +943,17 @@ export default function App() {
           <div><b>CEILING DESIGNER</b><span>LITE · КОЛОМИЯ</span></div>
         </div>
         <nav>
-          <button className="nav-item active" onClick={() => setCatalogPage(false)}><House size={18}/>Об’єкти</button>
+          <button className={`nav-item ${!catalogPage&&projectView==='active'?'active':''}`} onClick={() => navigateProjects('active')}><House size={18}/>Об’єкти</button>
+          <button className={`nav-item ${!catalogPage&&projectView==='archive'?'active':''}`} onClick={() => navigateProjects('archive')}><Archive size={18}/>Архів</button>
+          <button className={`nav-item ${!catalogPage&&projectView==='calendar'?'active':''}`} onClick={() => navigateProjects('calendar')}><CalendarDays size={18}/>Календар замірів</button>
+          <button className="nav-item" onClick={() => { setCatalogPage(true); setActive(null); setActiveRoomId(null); setCreating(false); setEstimateProject(null) }}><Layers3 size={18}/>Каталог</button>
           <button className="nav-item" disabled><ClipboardList size={18}/>Кошториси</button>
-          <button className="nav-item" onClick={() => { setCatalogPage(true); setActive(null); setActiveRoomId(null); setCreating(false) }}><Layers3 size={18}/>Каталог</button>
         </nav>
         <div className="sidebar-bottom">
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.15</small>
+          <small>Версія 0.7.16</small>
         </div>
       </aside>
 
@@ -932,7 +963,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.15</small>
+            <small>v0.7.16</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1010,7 +1041,7 @@ export default function App() {
               {(() => {
                 const sections = estimateRows(estimateProject)
                 const base = sections.reduce((sum, section) => sum + section.total, 0)
-                const percent = Math.max(0, Math.min(100, Number(discountPercent || 0)))
+                const percent = Math.min(100,num(discountPercent))
                 const afterDiscount = base * (1 - percent / 100)
                 const payable = roundedEstimate ? Math.floor(afterDiscount / 100) * 100 : Math.round(afterDiscount)
                 const deposit = num(estimateProject.deposit)
@@ -1051,14 +1082,15 @@ export default function App() {
                   <label style={{ ...labelStyle, marginTop: 8 }}>Внесений завдаток, грн
                     <NumericInput key={estimateProject.id + "-deposit"} style={inputStyle} integer value={estimateProject.deposit || ''} onChange={updateEstimateDeposit} placeholder="Введи суму завдатку" />
                   </label>
-                  <div className="info-row" style={{ fontSize: 18 }}><b>Залишок до оплати</b><b style={{ color: '#ffc247' }}>{money(Math.max(0, payable - deposit))}</b></div>
-                  {deposit > payable && <p className="muted">Увага: завдаток перевищує суму кошторису.</p>}
+                  <div className="info-row" style={{ fontSize: 18 }}><b>Залишок до оплати</b><b style={{ color: '#ffc247' }}>{money(payment(base,estimateProject).balance)}</b></div>
+                  {payment(base,estimateProject).final>0 && <div className="info-row"><span>Остаточна оплата</span><b>{money(payment(base,estimateProject).final)}</b></div>}
+                  {deposit+payment(base,estimateProject).final > payable && <p className="muted">Увага: отримана оплата перевищує суму кошторису.</p>}
                   <div style={{ display: 'flex', gap: 9, flexWrap: 'wrap', marginTop: 14 }}>
-                    <button className="button secondary" onClick={() => setRoundedEstimate(v => !v)}>{roundedEstimate ? 'Скасувати заокруглення' : 'Заокруглити до сотень'}</button>
+                    <button className="button secondary" onClick={() => updateEstimateTerms(discountPercent,!roundedEstimate)}>{roundedEstimate ? 'Скасувати заокруглення' : 'Заокруглити до сотень'}</button>
                     <button className="button secondary" onClick={() => setDiscountOpen(v => !v)}>Коригування</button>
                   </div>
                   {discountOpen && <div style={{ display: 'flex', gap: 12, alignItems: 'end', flexWrap: 'wrap', padding: 12, background: '#1a2834', borderRadius: 10, marginTop: 14 }}>
-                    <label style={{ ...labelStyle, flex: '1 1 150px', marginBottom: 0 }}>Знижка, %<NumericInput style={inputStyle} max={100} value={discountPercent} onChange={value => { setDiscountPercent(value); setRoundedEstimate(false) }}/></label>
+                    <label style={{ ...labelStyle, flex: '1 1 150px', marginBottom: 0 }}>Знижка, %<NumericInput style={inputStyle} max={100} value={discountPercent} onChange={value => updateEstimateTerms(value,false)}/></label>
                     <span className="muted">Застосовується до загальної суми</span>
                   </div>}
                 </>
@@ -1470,7 +1502,7 @@ export default function App() {
             <button className="back-link" onClick={() => setActive(null)}><ArrowLeft size={16}/> До списку об’єктів</button>
             <div className="page-heading">
               <div><div className="eyebrow">ОБ’ЄКТ · {active.id}</div><h1>{active.client}</h1><p className="muted">Створено {new Date(active.created).toLocaleDateString('uk-UA')}</p></div>
-              <span className="pill">{active.status}</span>
+              <span className="pill">{active.archivedAt?'Архів · ':''}{active.status}</span>
             </div>
             <div className="panel" style={{ marginBottom: 18, border: '2px solid #e5a900' }}>
               <h2 style={{ marginTop: 0 }}>Керування об’єктом</h2>
@@ -1480,12 +1512,19 @@ export default function App() {
                 <button className="button secondary" onClick={openLocation}><MapPin size={15}/> Локація об’єкта</button>
                 <button className="button secondary" onClick={exportCuttingPlan}>Креслення для закрійника PDF</button>
                 <button className="button secondary" onClick={exportWorkerTask}><ClipboardList size={15}/> Завдання монтажникам PDF</button>
+                {active.archivedAt ? <button className="button secondary" onClick={()=>{if(confirm('Повернути об’єкт до активних?')){syncProject(restore(active));setProjectView('active')}}}><RotateCcw size={15}/> Відновити з архіву</button> : <><button className="button primary" onClick={()=>archiveActive(true)}>Виконано</button><button className="button secondary" onClick={()=>archiveActive(false)}><Archive size={15}/> Заархівувати</button></>}
                 <button className="button" style={{ background: '#7f2525', color: '#fff' }} onClick={() => deleteProject(active.id)}><Trash2 size={15}/> Видалити об’єкт</button>
               </div>
             </div>
+            {active.completedAt && <div className="panel" style={{marginBottom:18}}>
+              <h2>Оплата виконаного об’єкта</h2>
+              {(()=>{const info=projectPayment(active);return <><div className="info-row"><span>Статус оплати</span><b style={{color:info.paid?'#60c692':'#ffc247'}}>{info.paid?'Оплачено':'Не оплачено'}</b></div><div className="info-row"><span>Вартість замовлення</span><b>{money(info.total)}</b></div><div className="info-row"><span>Завдаток</span><b>{money(info.deposit)}</b></div>{info.final>0&&<div className="info-row"><span>Остаточна оплата</span><b>{money(info.final)}</b></div>}<div className="info-row"><span>Залишок до оплати</span><b>{money(info.balance)}</b></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button className="button primary" disabled={info.paid||info.total<=0} onClick={()=>markPayment(active,true)}>Оплачено</button><button className="button secondary" disabled={!info.final} onClick={()=>markPayment(active,false)}>Скасувати остаточну оплату</button></div>{info.total<=0&&<p className="muted">Спочатку сформуй кошторис.</p>}</>})()}
+            </div>}
             <div className="detail-grid">
               <div className="panel">
                 <h2>Інформація про об’єкт</h2>
+                <label style={labelStyle}>Дата заміру<input type="date" style={inputStyle} value={projectDate(active)} onChange={e=>{if(e.target.value)syncProject({...active,measurementDate:e.target.value})}}/></label>
+                {!active.completedAt && <label style={labelStyle}>Статус об’єкта<select style={inputStyle} value={active.status} onChange={e=>syncProject({...active,status:e.target.value})}>{[...new Set([active.status,...activeStatuses])].map(status=><option key={status}>{status}</option>)}</select></label>}
                 <div className="info-row"><span>Телефон</span><b>{active.phone || 'Не вказано'}</b></div>
                 <div className="info-row"><span>Адреса</span><b>{active.address || 'Не вказано'}</b></div>
                 <div className="info-row"><span>Кількість кімнат</span><b>{active.rooms.length}</b></div>
@@ -1508,13 +1547,14 @@ export default function App() {
             <div className="panel form-panel">
               <label>Ім’я клієнта <em>*</em><input autoFocus value={client} onChange={e=>setClient(e.target.value)} placeholder="Наприклад, Іван Петренко"/></label>
               <label>Телефон<input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="0XX-XXX-XX-XX"/></label>
+              <label>Дата заміру<input type="date" value={measurementDate} onChange={e=>setMeasurementDate(e.target.value)}/></label>
               <label>Адреса об’єкта<input value={address} onChange={e=>setAddress(e.target.value)} placeholder="Місто, вулиця, номер будинку"/></label>
               <div className="field-label">Кімнати / стелі</div>
               <div className="add-room"><input value={roomName} onChange={e=>setRoomName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addRoom()} placeholder="Назва кімнати, наприклад Вітальня"/><button className="icon-button" onClick={addRoom} aria-label="Додати кімнату"><Plus size={19}/></button></div>
               {rooms.map((r,i)=><div className="added-room" key={r.id}><span>{i+1}. {r.name}</span><button onClick={()=>setRooms(prev=>prev.filter(x=>x.id!==r.id))}><X size={15}/></button></div>)}
               <div className="form-actions" style={{ flexWrap: 'wrap' }}>
                 <button className="button secondary" onClick={()=>{setCreating(false);resetForm()}}>Скасувати</button>
-                <button className="button secondary" disabled={!rooms.length} onClick={() => openEstimate({ id: 'Чернетка', client: client.trim(), phone: phone.trim(), address: address.trim(), status: 'Чернетка', created: new Date().toISOString(), rooms }, true)}>Кошторис без збереження</button>
+                <button className="button secondary" disabled={!rooms.length} onClick={() => openEstimate({ id: 'Чернетка', client: client.trim(), phone: phone.trim(), address: address.trim(), status: 'Чернетка', created: new Date().toISOString(), measurementDate: measurementDate || localDate(), rooms }, true)}>Кошторис без збереження</button>
                 <button className="button primary" disabled={!client.trim()} onClick={saveProject}>Зберегти проєкт</button>
               </div>
             </div>
@@ -1522,22 +1562,29 @@ export default function App() {
         ) : (
           <section className="content">
             <div className="page-heading">
-              <div><div className="eyebrow">РОБОЧИЙ ПРОСТІР</div><h1>Об’єкти</h1><p className="muted">Керування замовленнями та приміщеннями</p></div>
-              <button className="button primary" onClick={()=>setCreating(true)}><Plus size={18}/> Створити об’єкт</button>
+              <div><div className="eyebrow">РОБОЧИЙ ПРОСТІР</div><h1>{projectView==='archive'?'Архів об’єктів':projectView==='calendar'?'Календар замірів':'Об’єкти'}</h1><p className="muted">{projectView==='archive'?'Виконані та заархівовані замовлення':projectView==='calendar'?'Об’єкти за датою заміру':'Керування замовленнями та приміщеннями'}</p></div>
+              {projectView==='active'&&<button className="button primary" onClick={()=>{resetForm();setCreating(true)}}><Plus size={18}/> Створити об’єкт</button>}
             </div>
-            <div className="stats">
-              <div className="stat-card"><span>Усього об’єктів</span><strong>{projects.length}</strong></div>
-              <div className="stat-card"><span>Кімнат / стель</span><strong>{projects.reduce((n,p)=>n+p.rooms.length,0)}</strong></div>
-              <div className="stat-card"><span>Нові об’єкти</span><strong>{projects.filter(p=>p.status==='Новий').length}</strong></div>
-            </div>
-            <div className="list-toolbar"><h2>Усі об’єкти</h2><div className="search"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Пошук за клієнтом, телефоном або ID"/></div></div>
+            {projectView==='active'&&<div className="stats">
+              <div className="stat-card"><span>Активні об’єкти</span><strong>{liveProjects.length}</strong></div>
+              <div className="stat-card"><span>Кімнат / стель</span><strong>{liveProjects.reduce((n,p)=>n+p.rooms.length,0)}</strong></div>
+              <div className="stat-card"><span>Нові об’єкти</span><strong>{liveProjects.filter(p=>p.status==='Новий').length}</strong></div>
+            </div>}
+            {projectView==='archive'&&<><div className="stats"><div className="stat-card"><span>В архіві</span><strong>{archivedProjects.length}</strong></div><div className="stat-card"><span>Виконані, не оплачені</span><strong>{unpaidProjects.length}</strong></div><div className="stat-card"><span>Залишок до оплати</span><strong style={{fontSize:21}}>{money(debts)}</strong></div></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:14}}>{([['all','Усі'],['paid','Оплачено'],['unpaid','Не оплачено']] as const).map(([id,label])=><button key={id} className={`button ${archiveFilter===id?'primary':'secondary'}`} onClick={()=>setArchiveFilter(id)}>{label}</button>)}</div></>}
+            {projectView==='calendar'&&<div className="panel" style={{marginBottom:18}}>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>{([['day','День'],['month','Місяць'],['year','Рік']] as const).map(([id,label])=><button key={id} className={`button ${calendarScope===id?'primary':'secondary'}`} onClick={()=>{if(calendarScope==='year'&&id!=='year'){const m=calendarYear+calendarMonth.slice(4);setCalendarMonth(m);setCalendarDate(m+'-01')}else if(id==='day'&&!calendarDate.startsWith(calendarMonth))setCalendarDate(calendarMonth+'-01');if(id==='year'&&calendarScope!=='year')setCalendarYear(calendarMonth.slice(0,4));setCalendarScope(id)}}>{label}</button>)}</div>
+              {calendarScope==='year'?<div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}><button className="button secondary" onClick={()=>setCalendarYear(String(Number(calendarYear)-1))}>‹</button><b style={{flex:1,textAlign:'center'}}>{calendarYear}</b><button className="button secondary" onClick={()=>setCalendarYear(String(Number(calendarYear)+1))}>›</button></div>:<><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}><button className="button secondary" onClick={()=>{const m=shiftMonth(calendarMonth,-1);setCalendarMonth(m);setCalendarDate(m+'-01')}}>‹</button><b style={{flex:1,textAlign:'center'}}>{new Date(calendarMonth+'-15T12:00:00').toLocaleDateString('uk-UA',{month:'long',year:'numeric'})}</b><button className="button secondary" onClick={()=>{const m=shiftMonth(calendarMonth,1);setCalendarMonth(m);setCalendarDate(m+'-01')}}>›</button></div>
+              <div className="calendar-grid">{['Пн','Вт','Ср','Чт','Пт','Сб','Нд'].map(day=><small key={day} className="muted" style={{textAlign:'center'}}>{day}</small>)}{calendarDays(calendarMonth).map((day,i)=>{const count=day?projects.filter(p=>projectDate(p)===day&&(calendarFilter==='all'||(calendarFilter==='archive'?!!p.archivedAt:!p.archivedAt))).length:0;return day?<button key={day} className={`calendar-day ${calendarScope==='day'&&calendarDate===day?'selected':''}`} onClick={()=>{setCalendarDate(day);setCalendarScope('day')}} aria-label={`${day}: ${count} об’єктів`}><b>{Number(day.slice(-2))}</b>{count>0&&<small>{count}</small>}</button>:<span key={'blank'+i}/>})}</div></>}
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginTop:12}}><button className="button secondary" onClick={()=>{const d=localDate();setCalendarDate(d);setCalendarMonth(d.slice(0,7));setCalendarYear(d.slice(0,4));setCalendarScope('day')}}>Сьогодні</button><select aria-label="Об’єкти в календарі" value={calendarFilter} onChange={e=>setCalendarFilter(e.target.value as typeof calendarFilter)}><option value="all">Усі об’єкти</option><option value="active">Активні</option><option value="archive">Архівні</option></select></div>
+            </div>}
+            <div className="list-toolbar"><h2>{projectView==='calendar'?(calendarScope==='day'?formatMeasurementDate(calendarDate):calendarScope==='month'?calendarMonth:calendarYear):projectView==='archive'?'Архів':'Активні об’єкти'}</h2><div className="search"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Пошук за клієнтом, телефоном або ID"/></div></div>
             <div className="project-list">
               {filtered.length ? filtered.map(p=><button className="project-card" key={p.id} onClick={()=>setActive(p)}>
                 <div className="project-icon"><House size={21}/></div>
                 <div className="project-main"><b>{p.client}</b><span>{p.address || 'Адресу не вказано'} · {p.rooms.length} кімн.</span><small>{p.phone || p.id}</small></div>
-                <div className="project-meta"><span className="pill">{p.status}</span><small>{new Date(p.created).toLocaleDateString('uk-UA')}</small></div>
+                <div className="project-meta"><span className="pill">{p.completedAt?(projectPayment(p).paid?'Оплачено':'Не оплачено'):p.status}</span>{p.archivedAt&&<small>Архів</small>}{p.completedAt&&projectPayment(p).balance>0&&<small>{money(projectPayment(p).balance)}</small>}<small>{formatMeasurementDate(projectDate(p))}</small></div>
                 <ChevronRight className="project-chevron" size={19}/>
-              </button>) : <div className="empty"><div className="empty-icon"><House size={25}/></div><b>Нічого не знайдено</b><span>Зміни пошуковий запит або створи новий об’єкт.</span></div>}
+              </button>) : <div className="empty"><div className="empty-icon"><House size={25}/></div><b>Нічого не знайдено</b><span>За вибраними умовами об’єктів немає.</span></div>}
             </div>
             <div className="prototype-note"><span className="status-dot"/> Дані зберігаються на цьому пристрої. Після входу доступна хмарна синхронізація.</div>
           </section>
