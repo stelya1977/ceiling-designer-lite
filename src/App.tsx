@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useCloud, supabase } from './cloud'
+import JobPhotos,{hasJobPhotos} from './JobPhotos'
 import { StaffManager, JobAssignment, type JobPayload } from './Staff'
 import OwnerCalendar from './OwnerCalendar'
 import Finance from './Finance'
@@ -262,7 +263,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.24')
+        setUpdateAvailable(event.data.version !== '0.7.25')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -410,6 +411,7 @@ export default function App() {
     if(projects.find(p=>p.id===id)?.workerReceiptId){alert('Об’єкт має зареєстровану оплату монтажника. Його не можна видалити з історії.');return}
     if (!confirm('Видалити цей об’єкт разом з усіма кімнатами та розрахунками? Завдання монтажників також буде відкликано.')) return
     if (!cloud.session || !networkOnline) { alert('Для видалення об’єкта потрібен інтернет: спочатку треба відкликати завдання монтажників.'); return }
+    try { if(await hasJobPhotos(cloud.session.user.id,id)){alert('Спочатку видали фото виконаних робіт з об’єкта.');return} } catch(e){alert('Не вдалося перевірити фото. Видалення зупинено.');return}
     const removed = await supabase.from('ceiling_jobs').delete().eq('owner_id',cloud.session.user.id).eq('project_id',id)
     if (removed.error) { alert('Не вдалося відкликати завдання: '+removed.error.message); return }
     setProjects(prev => prev.filter(p => p.id !== id))
@@ -990,7 +992,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.24</small>
+          <small>Версія 0.7.25</small>
         </div>
       </aside>
 
@@ -1000,7 +1002,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.24</small>
+            <small>v0.7.25</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1555,6 +1557,7 @@ export default function App() {
               </div>
             </div>
             {cloud.session && <JobAssignment key={active.id} owner={cloud.session.user.id} projectId={active.id} disabled={(!!active.archivedAt && !active.completedAt) || cloud.status!=='Синхронізовано' || cloud.busy || !!cloud.conflict} build={()=>({payload:buildWorkerTask(active).payload,balance:projectPayment(active).balance,final:projectPayment(active).final,project:active})} onAcceptCompletion={()=>archiveActive(true)} onPaymentSync={()=>void cloud.sync()}/>}
+            {cloud.session && <JobPhotos key={active.id} owner={cloud.session.user.id} project={active.id} admin/>}
             {active.completedAt && <div className="panel" style={{marginBottom:18}}>
               <h2>Оплата виконаного об’єкта</h2>
               {(()=>{const info=projectPayment(active);return <><div className="info-row"><span>Статус оплати</span><b style={{color:info.paid?'#60c692':'#ffc247'}}>{info.paid?'Оплачено':'Не оплачено'}</b></div><div className="info-row"><span>Вартість замовлення</span><b>{money(info.total)}</b></div><div className="info-row"><span>Завдаток</span><b>{money(info.deposit)}</b></div>{info.final>0&&<div className="info-row"><span>Остаточна оплата</span><b>{money(info.final)}</b></div>}<div className="info-row"><span>Залишок до оплати</span><b>{money(info.balance)}</b></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button className="button primary" disabled={info.paid||info.total<=0} onClick={()=>markPayment(active,true)}>Оплачено</button><button className="button secondary" disabled={!info.final||!!active.workerReceiptId} onClick={()=>markPayment(active,false)}>Скасувати остаточну оплату</button></div>{info.total<=0&&<p className="muted">Спочатку сформуй кошторис.</p>}</>})()}
