@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useCloud, supabase } from './cloud'
 import { StaffManager, JobAssignment, type JobPayload } from './Staff'
+import OwnerCalendar from './OwnerCalendar'
 import { consolidateMaterials, type InstallerMaterial } from './installerMaterials'
 import RoomComponents from './RoomComponents'
 import NumericInput from './NumericInput'
@@ -206,7 +207,7 @@ export default function App() {
   const [catalog, setCatalog] = useState<CatalogItem[]>(readCatalog)
   const availableCatalog = useMemo(() => effectiveCatalog(catalog), [catalog])
   const [catalogPage, setCatalogPage] = useState(false)
-  const [staffOpen, setStaffOpen] = useState(false)
+  const [ownerPage,setOwnerPage]=useState<'staff'|'mounts'|null>(null)
   const [catalogCategory, setCatalogCategory] = useState<CatalogCategory>('Профілі')
   const [editingCatalogId, setEditingCatalogId] = useState<string | null>(null)
   const emptyCatalogDraft = { category: 'Профілі' as CatalogCategory, name: '', price: '', unit: 'м' as Unit, stockLength: '', cornerPrice: '0', freeCorners: '0', description: '', billStock: false, ledPrice: '', powerPrice: '', grillePrice: '' }
@@ -256,7 +257,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.20')
+        setUpdateAvailable(event.data.version !== '0.7.21')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -329,7 +330,11 @@ export default function App() {
   const debts = unpaidProjects.reduce((sum,p)=>sum+projectPayment(p).balance,0)
   function navigateProjects(view:'active'|'archive'|'calendar') {
     if(creating && (client.trim()||phone.trim()||address.trim()||roomName.trim()||rooms.length) && !confirm('Вийти зі створення об’єкта? Незбережена чернетка буде втрачена.'))return
-    setProjectView(view);setCatalogPage(false);setCreating(false);setEstimateProject(null);setActive(null);setActiveRoomId(null);setQuery('')
+    setOwnerPage(null);setProjectView(view);setCatalogPage(false);setCreating(false);setEstimateProject(null);setActive(null);setActiveRoomId(null);setQuery('')
+  }
+  function navigateOwner(page:'staff'|'mounts') {
+    if(creating && (client.trim()||phone.trim()||address.trim()||roomName.trim()||rooms.length) && !confirm('Вийти зі створення об’єкта? Незбережена чернетка буде втрачена.'))return
+    setOwnerPage(page);setCatalogPage(false);setCreating(false);setEstimateProject(null);setActive(null);setActiveRoomId(null);setQuery('')
   }
   function archiveActive(complete:boolean) {
     if(!active || active.archivedAt)return
@@ -936,18 +941,19 @@ export default function App() {
           <div><b>CEILING DESIGNER</b><span>LITE · КОЛОМИЯ</span></div>
         </div>
         <nav>
-          <button className={`nav-item ${!catalogPage&&projectView==='active'?'active':''}`} onClick={() => navigateProjects('active')}><House size={18}/>Об’єкти</button>
-          <button className={`nav-item ${!catalogPage&&projectView==='archive'?'active':''}`} onClick={() => navigateProjects('archive')}><Archive size={18}/>Архів</button>
-          <button className={`nav-item ${!catalogPage&&projectView==='calendar'?'active':''}`} onClick={() => navigateProjects('calendar')}><CalendarDays size={18}/>Календар замірів</button>
-          <button className="nav-item" onClick={() => { setCatalogPage(true); setActive(null); setActiveRoomId(null); setCreating(false); setEstimateProject(null) }}><Layers3 size={18}/>Каталог</button>
-          <button className="nav-item" onClick={()=>setStaffOpen(true)}><ClipboardList size={18}/>Працівники</button>
+          <button className={`nav-item ${!ownerPage&&!catalogPage&&projectView==='active'?'active':''}`} onClick={() => navigateProjects('active')}><House size={18}/>Об’єкти</button>
+          <button className={`nav-item ${!ownerPage&&!catalogPage&&projectView==='archive'?'active':''}`} onClick={() => navigateProjects('archive')}><Archive size={18}/>Архів</button>
+          <button className={`nav-item ${!ownerPage&&!catalogPage&&projectView==='calendar'?'active':''}`} onClick={() => navigateProjects('calendar')}><CalendarDays size={18}/>Календар замірів</button>
+          <button className={`nav-item ${catalogPage?'active':''}`} onClick={() => { setOwnerPage(null);setCatalogPage(true); setActive(null); setActiveRoomId(null); setCreating(false); setEstimateProject(null) }}><Layers3 size={18}/>Каталог</button>
+          <button className={`nav-item ${ownerPage==='mounts'?'active':''}`} onClick={()=>navigateOwner('mounts')}><CalendarDays size={18}/>Календар монтажів</button>
+          <button className={`nav-item ${ownerPage==='staff'?'active':''}`} onClick={()=>navigateOwner('staff')}><ClipboardList size={18}/>Працівники</button>
           <button className="nav-item" disabled><ClipboardList size={18}/>Кошториси</button>
         </nav>
         <div className="sidebar-bottom">
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.20</small>
+          <small>Версія 0.7.21</small>
         </div>
       </aside>
 
@@ -957,7 +963,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.20</small>
+            <small>v0.7.21</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -981,7 +987,7 @@ export default function App() {
           </div>
         </div>}
 
-        {catalogPage ? (
+        {ownerPage ? (cloud.session ? (ownerPage==='staff' ? <StaffManager key={cloud.session.user.id} owner={cloud.session.user.id}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
           <section className="content narrow">
             <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування позиціями та базовими цінами. Дані зберігаються локально та синхронізуються після входу.</p></div></div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
@@ -1584,7 +1590,6 @@ export default function App() {
             <div className="prototype-note"><span className="status-dot"/> Дані зберігаються на цьому пристрої. Після входу доступна хмарна синхронізація.</div>
           </section>
         )}
-        {staffOpen && cloud.session && <StaffManager owner={cloud.session.user.id} onClose={()=>setStaffOpen(false)}/>}
         {locationOpen && active && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18 }}>
             <div className="panel" style={{ width: 'min(560px, 100%)', maxHeight: '90vh', overflowY: 'auto', border: '1px solid #e5a900', boxShadow: '0 20px 70px rgba(0,0,0,.45)' }}>
