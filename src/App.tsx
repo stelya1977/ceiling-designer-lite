@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useCloud } from './cloud'
 import RoomComponents from './RoomComponents'
-import { categories, categoryOf, effectiveCatalog, newPricing, newSelection, calculate, snapshot, num, type CatalogCategory, type CatalogItem, type RoomPricing, type Unit } from './pricing'
+import { categories, categoryOf, effectiveCatalog, newPricing, newSelection, calculate, snapshot, num, type DetailedPriceRow, type CatalogCategory, type CatalogItem, type RoomPricing, type Unit } from './pricing'
 import {
   Plus, Search, ChevronRight, House, ClipboardList, Layers3, Settings,
   X, ArrowLeft, Trash2, Ruler, RotateCcw, MapPin, Navigation, ImagePlus, Pencil, Sparkles, Download
@@ -187,6 +187,19 @@ function readProjects(): Project[] {
 
 function escapeHtml(value: unknown) { return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') }
 
+function localDate(value?: string) {
+  const d = value ? new Date(value) : new Date()
+  if (!Number.isFinite(d.getTime())) return localDate()
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+}
+function projectDate(project: Pick<Project,'measurementDate'|'created'>) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(project.measurementDate || '') ? project.measurementDate! : localDate(project.created)
+}
+function exportName(project: Project, kind: string) {
+  const [, month, day] = projectDate(project).split('-')
+  const name = (project.client || project.id || 'Об’єкт').replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ').replace(/\s+/g,' ').trim().replace(/[. ]+$/g,'').slice(0,100) || 'Об’єкт'
+  return `${name} ${day}${month} - ${kind}`
+}
 function formatNumber(n: number) {
   return n.toFixed(2).replace('.', ',')
 }
@@ -255,17 +268,28 @@ export default function App() {
 
   const [networkOnline, setNetworkOnline] = useState(navigator.onLine)
   const [offlineReady, setOfflineReady] = useState(!!navigator.serviceWorker?.controller)
+  const [updateAvailable, setUpdateAvailable] = useState(false)
   useEffect(() => {
     const networkChanged = () => setNetworkOnline(navigator.onLine)
-    const shellChanged = () => setOfflineReady(!!navigator.serviceWorker?.controller)
+    const shellChanged = () => {
+      setOfflineReady(!!navigator.serviceWorker?.controller)
+      navigator.serviceWorker?.controller?.postMessage({type:'CEILING_VERSION'})
+    }
+    const versionMessage = (event: MessageEvent) => {
+      if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
+        setUpdateAvailable(event.data.version !== '0.7.14')
+      }
+    }
     window.addEventListener('online', networkChanged)
     window.addEventListener('offline', networkChanged)
     navigator.serviceWorker?.addEventListener('controllerchange', shellChanged)
+    navigator.serviceWorker?.addEventListener('message', versionMessage)
     networkChanged(); shellChanged()
     return () => {
       window.removeEventListener('online', networkChanged)
       window.removeEventListener('offline', networkChanged)
       navigator.serviceWorker?.removeEventListener('controllerchange', shellChanged)
+      navigator.serviceWorker?.removeEventListener('message', versionMessage)
     }
   }, [])
   const [storageWarning, setStorageWarning] = useState('')
@@ -347,6 +371,7 @@ export default function App() {
       address: address.trim(),
       status: 'Новий',
       created: new Date().toISOString(),
+      measurementDate: localDate(),
       rooms
     }
     setProjects(prev => [p, ...prev])
@@ -490,7 +515,7 @@ export default function App() {
     const c = {...defaultComponents(), ...(room.components || {})}
     const oldCatalog = effectiveCatalog(defaultCatalog)
     const result = newPricing(oldCatalog)
-    result.insertColor=c.insertColor; result.insertOverride=c.insertLength || '0'; result.standardCorners=c.standardCorners || '4'
+    result.insertColor=c.insertColor; result.insertOverride=c.insertLength ?? ''; result.standardCorners=c.standardCorners || '4'
     const add = (id:string, quantity:string, patch: Partial<ReturnType<typeof newSelection>> = {}) => {
       const item = oldCatalog.find(x=>x.id===id)
       if(item && num(quantity)>0) result.items.push({...newSelection(item,makeId()),quantity,...patch})
@@ -535,7 +560,7 @@ export default function App() {
 
   function estimateRows(project: Project) {
     return project.rooms.map(room => {
-      if(room.pricing){const e=calculate(room.pricing,roomArea(room)||0,roomPerimeter(room)||0);return {room,rows:e.rows,total:e.total}}
+      if(room.pricing){const e=calculate(room.pricing,roomArea(room)||0,roomPerimeter(room)||0);return {room,rows:e.rows,detailedRows:e.detailedRows,total:e.total}}
       const e = componentEstimate(room)
       const rows: { label: string; amount: number }[] = []
       if (e.fabric > 0) rows.push({ label: `Полотно MSD Premium (${formatNumber(e.area)} м²)`, amount: e.fabric })
@@ -552,14 +577,29 @@ export default function App() {
       if (e.fn27Power > 0) rows.push({ label: `Блоки живлення FN-27 (${room.components?.fn27Power || 0} шт.)`, amount: e.fn27Power })
       if (e.fn27Grilles > 0) rows.push({ label: `Магнітні решітки FN-27 (${room.components?.fn27Grilles || 0} шт.)`, amount: e.fn27Grilles })
       e.catalogItems.filter(item => Number(item.quantity || 0) > 0).forEach(item => rows.push({ label: `${item.name} (${item.quantity} ${item.unit})`, amount: Number(item.price || 0) * Number(item.quantity || 0) }))
-      return { room, rows, total: rows.reduce((sum, row) => sum + row.amount, 0) }
+      const c = {...defaultComponents(), ...(room.components || {})}
+      const detailedRows: DetailedPriceRow[] = []
+      const detail = (label:string, quantity:number, unit:string, unitPrice:number, amount=quantity*unitPrice) => {if(amount>0)detailedRows.push({label,quantity,unit,unitPrice,amount})}
+      detail('Полотно MSD Premium',e.area,'м²',700,e.fabric)
+      detail(`Декоративна вставка (${c.insertColor==='black'?'чорна':'біла'})`,e.insertLength,'м',100,e.insert)
+      detail(`ALUTAT FLY (монтаж ${formatNumber(num(c.flyLength))} м)`,Math.ceil(num(c.flyLength)/2)*2,'м',1200,e.fly)
+      detail('Кути FLY',num(c.flyCorners),'шт.',500,e.flyCornersCost)
+      detail('Блоки живлення FLY',num(c.flyPower),'шт.',1000,e.flyPower)
+      detail('Магнітні решітки FLY',num(c.flyGrilles),'шт.',900,e.flyGrilles)
+      detail('Тіньовий профіль UD',num(c.udLength),'м',500,e.ud)
+      detail('Кути UD',num(c.udCorners),'шт.',400,e.udCornersCost)
+      detail('Додаткові кути стандартного профілю',Math.max(0,Number(c.standardCorners || 4)-4),'шт.',400,e.standardCorners)
+      e.skDetails.filter(item=>item.total>0).forEach((item,i)=>detail(`Карниз SK 3.0 №${i+1} (${item.color==='white'?'білий':'чорний'}, ${formatNumber(num(item.length))} м) та аксесуари`,1,'компл.',item.total))
+      detail(`LED-профіль FN-27 (монтаж ${formatNumber(num(c.fn27Length))} м)`,Math.ceil(num(c.fn27Length)/2)*2,'м',2100,e.fn27)
+      detail('Блоки живлення FN-27',num(c.fn27Power),'шт.',1000,e.fn27Power)
+      detail('Магнітні решітки FN-27',num(c.fn27Grilles),'шт.',900,e.fn27Grilles)
+      e.catalogItems.forEach(item=>detail(item.name,Number(item.quantity||0),item.unit,Number(item.price||0)))
+      return { room, rows, detailedRows, total: rows.reduce((sum, row) => sum + row.amount, 0) }
     })
   }
 
   function openEstimate(project: Project, fromCreate = false) {
-    const today = new Date()
-    const measurementDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-    setEstimateProject({ ...project, measurementDate: project.measurementDate || measurementDate })
+    setEstimateProject({ ...project, measurementDate: projectDate(project) })
     setEstimateReturnToCreate(fromCreate)
     setDiscountOpen(false)
     setDiscountPercent('0')
@@ -572,7 +612,7 @@ export default function App() {
     return new Date(year, month - 1, day).toLocaleDateString('uk-UA')
   }
 
-  function exportEstimate(format: 'pdf' | 'jpeg') {
+  function exportEstimate(format: 'pdf' | 'jpeg', detailed = false) {
     if (!estimateProject) return
     const sections = estimateRows(estimateProject)
     const base = sections.reduce((sum, section) => sum + section.total, 0)
@@ -581,8 +621,10 @@ export default function App() {
     const deposit = Math.max(0, Number(estimateProject.deposit || 0))
     const balance = Math.max(0, total - deposit)
     const moneyText = (n: number) => `${Math.round(n).toLocaleString('uk-UA')} грн`
-    const rowsHtml = sections.map(section => `<section class="room"><h2>${section.room.name}</h2><table>${section.rows.map(row => `<tr><td>${escapeHtml(row.label)}</td><td>${moneyText(row.amount)}</td></tr>`).join('')}<tr class="subtotal"><td>Разом за кімнату</td><td>${moneyText(section.total)}</td></tr></table></section>`).join('')
-    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;background:#fff;padding:32px;max-width:900px;margin:auto}h1{font-size:28px;margin:0 0 8px}p{color:#596675;margin:4px 0 24px}.room{margin:22px 0;page-break-inside:avoid}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:8px}table{width:100%;border-collapse:collapse}td{padding:9px 4px;border-bottom:1px solid #e4e8ec}td:last-child{text-align:right;white-space:nowrap;font-weight:600}.subtotal td{font-weight:700;background:#f5f7f9}.total{margin-top:26px;padding:18px;background:#f5f7f9;font-size:24px;font-weight:700;text-align:right}.discount{text-align:right;color:#596675}@media print{body{padding:0}}</style></head><body><h1>Кошторис · НСК — Натяжні Стелі Коломия</h1><p>Замовник: ${estimateProject.client || '—'} · Телефон: ${estimateProject.phone || '—'}<br>Об’єкт: ${estimateProject.address || '—'}<br>Дата заміру: ${formatMeasurementDate(estimateProject.measurementDate)}</p>${rowsHtml}${Number(discountPercent)>0 ? `<p class="discount">Знижка ${discountPercent}%: −${moneyText(base-discounted)}</p>` : ''}<div class="total">Вартість замовлення: ${moneyText(total)}<br><small>Завдаток: ${moneyText(deposit)}<br>Залишок до оплати: ${moneyText(balance)}</small></div></body></html>`
+    const filename = exportName(estimateProject, detailed ? 'Детальний кошторис' : 'Кошторис по кімнатах')
+    const preciseMoney = (n:number) => `${n.toLocaleString('uk-UA',{maximumFractionDigits:2})} грн`
+    const rowsHtml = sections.map(section => `<section class="room"><h2>${escapeHtml(section.room.name)}</h2><table>${detailed ? '<thead><tr><th>Найменування</th><th>Кількість</th><th>Ціна за од.</th><th>Сума</th></tr></thead>' : ''}<tbody>${detailed ? section.detailedRows.map(row => `<tr><td>${escapeHtml(row.label)}</td><td>${row.quantity.toLocaleString('uk-UA',{maximumFractionDigits:3})} ${escapeHtml(row.unit)}</td><td>${preciseMoney(row.unitPrice)}</td><td>${preciseMoney(row.amount)}</td></tr>`).join('') : section.rows.map(row => `<tr><td>${escapeHtml(row.label)}</td><td>${moneyText(row.amount)}</td></tr>`).join('')}<tr class="subtotal"><td colspan="${detailed?3:1}">Разом за кімнату</td><td>${detailed?preciseMoney(section.total):moneyText(section.total)}</td></tr></tbody></table></section>`).join('')
+    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${escapeHtml(filename)}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;background:#fff;padding:32px;max-width:900px;margin:auto}h1{font-size:28px;margin:0 0 8px}p{color:#596675;margin:4px 0 24px}.room{margin:22px 0;page-break-inside:auto}tr{break-inside:avoid}thead{display:table-header-group}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:8px}table{width:100%;border-collapse:collapse}th{text-align:left;background:#f5f7f9;padding:8px 4px}th:not(:first-child),td:not(:first-child){text-align:right;white-space:nowrap}td{padding:9px 4px;border-bottom:1px solid #e4e8ec}td:last-child{text-align:right;white-space:nowrap;font-weight:600}.subtotal td{font-weight:700;background:#f5f7f9}.total{margin-top:26px;padding:18px;background:#f5f7f9;font-size:24px;font-weight:700;text-align:right}.discount{text-align:right;color:#596675}@media print{body{padding:0}}</style></head><body><h1>${detailed?'Детальний кошторис':'Кошторис'} · НСК — Натяжні Стелі Коломия</h1><p>Замовник: ${escapeHtml(estimateProject.client || '—')} · Телефон: ${escapeHtml(estimateProject.phone || '—')}<br>Об’єкт: ${escapeHtml(estimateProject.address || '—')}<br>Дата заміру: ${formatMeasurementDate(estimateProject.measurementDate)}</p>${rowsHtml}${Number(discountPercent)>0 ? `<p class="discount">Знижка ${discountPercent}%: −${moneyText(base-discounted)}</p>` : ''}<div class="total">Вартість замовлення: ${moneyText(total)}<br><small>Завдаток: ${moneyText(deposit)}<br>Залишок до оплати: ${moneyText(balance)}</small></div></body></html>`
     if (format === 'pdf') {
       const win = window.open('', '_blank')
       if (!win) { alert('Дозволь спливаючі вікна для збереження PDF.'); return }
@@ -599,7 +641,7 @@ export default function App() {
       const ctx = canvas.getContext('2d')
       if (!ctx) { URL.revokeObjectURL(url); alert('Не вдалося створити JPEG.'); return }
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-      canvas.toBlob(file => { if (file) { const a = document.createElement('a'); const link = URL.createObjectURL(file); a.href = link; a.download = `koshtorys-${estimateProject.id}.jpg`; a.click(); URL.revokeObjectURL(link) } URL.revokeObjectURL(url) }, 'image/jpeg', 0.94)
+      canvas.toBlob(file => { if (file) { const a = document.createElement('a'); const link = URL.createObjectURL(file); a.href = link; a.download = `${filename}.jpg`; a.click(); URL.revokeObjectURL(link) } URL.revokeObjectURL(url) }, 'image/jpeg', 0.94)
     }
     img.onerror = () => { URL.revokeObjectURL(url); alert('Браузер не зміг сформувати JPEG. Спробуй PDF.') }
     img.src = url
@@ -644,7 +686,7 @@ export default function App() {
       const diagonals = Object.entries(room.diagonals || {}).filter(([, value]) => Number(value) > 0).map(([key, value]) => `${key} = ${fmt(value)}`).join(' · ')
       return `<section class="sheet"><div class="sheet-head"><div><h2>Полотно: ${esc(room.canvasNumber || `№${index + 1}`)}</h2><p>${esc(room.name || `Приміщення ${index + 1}`)}</p></div><div class="sheet-number">№ ${index + 1}</div></div>${drawing}<div class="measurements"><h3>Розміри сторін</h3><div class="side-grid">${(room.shape === 'rectangle' ? [`AB = ${fmt(room.width)}`, `BC = ${fmt(room.length)}`, `CD = ${fmt(room.width)}`, `DA = ${fmt(room.length)}`] : orderedSides.map((side, i) => `${String.fromCharCode(65+i)}${String.fromCharCode(65+((i+1)%orderedSides.length))} = ${fmt(side.length)}`)).map(item => `<div>${esc(item)}</div>`).join('')}</div>${diagonals ? `<p class="diagonals">Діагоналі: ${esc(diagonals)}</p>` : ''}</div></section>`
     }).join('')
-    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>Креслення для закрійника</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;margin:0;padding:22px}.header{border-bottom:2px solid #111;padding-bottom:14px;margin-bottom:18px}.header h1{font-size:25px;margin:0 0 10px}.header p{font-size:17px;margin:4px 0}.sheet{page-break-after:always;break-after:page;min-height:0;padding:8px 0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}.sheet-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #aaa;padding-bottom:8px}.sheet-head h2{font-size:23px;margin:0 0 5px}.sheet-head p{margin:0;color:#444}.sheet-number{font-size:25px;font-weight:bold}.drawing{display:block;width:100%;height:470px;margin:25px auto 10px}.measurements{margin-top:10px}.measurements h3{font-size:18px;margin-bottom:12px}.side-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.side-grid div{border:1px solid #bbb;padding:12px;font-size:18px;font-weight:bold}.diagonals{margin-top:15px;font-size:15px}@page{size:A4;margin:15mm}@media print{body{padding:0}.sheet{min-height:0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}}</style></head><body><header class="header"><h1>Креслення для закрійника</h1><p><b>Об’єкт:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p></header>${roomPages || '<p>У цьому об’єкті немає полотен.</p>'}</body></html>`
+    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Розкрій'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;margin:0;padding:22px}.header{border-bottom:2px solid #111;padding-bottom:14px;margin-bottom:18px}.header h1{font-size:25px;margin:0 0 10px}.header p{font-size:17px;margin:4px 0}.sheet{page-break-after:always;break-after:page;min-height:0;padding:8px 0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}.sheet-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #aaa;padding-bottom:8px}.sheet-head h2{font-size:23px;margin:0 0 5px}.sheet-head p{margin:0;color:#444}.sheet-number{font-size:25px;font-weight:bold}.drawing{display:block;width:100%;height:470px;margin:25px auto 10px}.measurements{margin-top:10px}.measurements h3{font-size:18px;margin-bottom:12px}.side-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.side-grid div{border:1px solid #bbb;padding:12px;font-size:18px;font-weight:bold}.diagonals{margin-top:15px;font-size:15px}@page{size:A4;margin:15mm}@media print{body{padding:0}.sheet{min-height:0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}}</style></head><body><header class="header"><h1>Креслення для закрійника</h1><p><b>Об’єкт:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p></header>${roomPages || '<p>У цьому об’єкті немає полотен.</p>'}</body></html>`
     const win = window.open('', '_blank')
     if (!win) { alert('Дозволь спливаючі вікна, щоб відкрити креслення та зберегти його в PDF.'); return }
     win.document.open()
@@ -741,7 +783,7 @@ export default function App() {
     const mapUrl = project.locationLat != null && project.locationLng != null
       ? `https://www.google.com/maps?q=${project.locationLat},${project.locationLng}`
       : project.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(project.address)}` : ''
-    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>Завдання монтажникам</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;padding:28px;max-width:900px;margin:auto}h1{font-size:26px;margin:0 0 14px}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:7px;margin-top:24px}p{margin:7px 0}ul{padding-left:22px}li{padding:5px 0;font-size:16px}.roomgrid{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:14px;align-items:start}.mini{width:100%;max-height:145px;border:1px solid #d8dee5;border-radius:6px;background:#fff}.map{display:inline-block;margin-top:10px;padding:10px 14px;background:#eef3f8;border-radius:6px;color:#174c83;text-decoration:none;font-weight:bold}.room{page-break-inside:avoid} @page{size:A4;margin:15mm}@media print{body{padding:0}.roomgrid{grid-template-columns:minmax(0,1fr) 190px}.mini{max-height:130px}}</style></head><body><h1>Завдання монтажникам</h1><p><b>Об'єкт:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p><p><b>Адреса:</b> ${esc(project.address || 'Не вказана')}</p>${mapUrl ? `<a class="map" href="${mapUrl}">Відкрити маршрут у Google Maps</a>` : ''}${rows}<section><h2>ЗІБРАТИ НА ОБ'ЄКТ — ЗАГАЛЬНИЙ СПИСОК</h2><ul>${summaryHtml || '<li>Комплектуючі не вказані</li>'}</ul></section><p style="margin-top:28px;color:#667">НСК — Натяжні Стелі Коломия</p></body></html>`
+    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Монтаж'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;padding:28px;max-width:900px;margin:auto}h1{font-size:26px;margin:0 0 14px}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:7px;margin-top:24px}p{margin:7px 0}ul{padding-left:22px}li{padding:5px 0;font-size:16px}.roomgrid{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:14px;align-items:start}.mini{width:100%;max-height:145px;border:1px solid #d8dee5;border-radius:6px;background:#fff}.map{display:inline-block;margin-top:10px;padding:10px 14px;background:#eef3f8;border-radius:6px;color:#174c83;text-decoration:none;font-weight:bold}.room{page-break-inside:avoid} @page{size:A4;margin:15mm}@media print{body{padding:0}.roomgrid{grid-template-columns:minmax(0,1fr) 190px}.mini{max-height:130px}}</style></head><body><h1>Завдання монтажникам</h1><p><b>Об'єкт:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p><p><b>Адреса:</b> ${esc(project.address || 'Не вказана')}</p>${mapUrl ? `<a class="map" href="${mapUrl}">Відкрити маршрут у Google Maps</a>` : ''}${rows}<section><h2>ЗІБРАТИ НА ОБ'ЄКТ — ЗАГАЛЬНИЙ СПИСОК</h2><ul>${summaryHtml || '<li>Комплектуючі не вказані</li>'}</ul></section><p style="margin-top:28px;color:#667">НСК — Натяжні Стелі Коломия</p></body></html>`
     const win = window.open('', '_blank')
     if (!win) { alert('Дозволь спливаючі вікна, щоб сформувати PDF.'); return }
     win.document.open(); win.document.write(html); win.document.close()
@@ -751,6 +793,7 @@ export default function App() {
   function exportOverallEstimate(format: 'pdf' | 'jpeg') {
     if (!estimateProject) return
     const sections = estimateRows(estimateProject)
+    const filename = exportName(estimateProject, 'Кошторис')
     const grouped = new Map<string, { label: string; amount: number }>()
     sections.forEach(section => section.rows.forEach(row => {
       const label = row.label.replace(/\s*\([^)]*\)\s*$/, '').trim()
@@ -767,7 +810,7 @@ export default function App() {
     const moneyText = (n: number) => `${Math.round(n).toLocaleString('uk-UA')} грн`
     const rowsHtml = [...grouped.values()].map(row => `<tr><td>${escapeHtml(row.label)}</td><td>${moneyText(row.amount)}</td></tr>`).join('')
     const roomsHtml = `<p>Кількість кімнат: ${estimateProject.rooms.length}</p>`
-    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;background:#fff;padding:32px;max-width:900px;margin:auto}h1{font-size:28px;margin:0 0 8px}p{color:#596675;margin:4px 0 18px}table{width:100%;border-collapse:collapse;margin-top:20px}td{padding:11px 5px;border-bottom:1px solid #e4e8ec}td:last-child{text-align:right;white-space:nowrap;font-weight:700}.total{margin-top:26px;padding:18px;background:#f5f7f9;font-size:23px;font-weight:700;text-align:right}.small{font-size:15px;line-height:1.7}@media print{body{padding:0}}</style></head><body><h1>Загальний кошторис об’єкта</h1><p>НСК — Натяжні Стелі Коломия<br>Замовник: ${estimateProject.client || '—'} · Телефон: ${estimateProject.phone || '—'}<br>Адреса: ${estimateProject.address || '—'}<br>Дата заміру: ${formatMeasurementDate(estimateProject.measurementDate)}<br>${roomsHtml}</p><table>${rowsHtml}</table>${percent > 0 ? `<p>Знижка ${percent}%: −${moneyText(base-afterDiscount)}</p>` : ''}<div class="total">Разом за об’єкт: ${moneyText(total)}<div class="small">Завдаток: ${moneyText(deposit)}<br>Залишок до оплати: ${moneyText(balance)}</div></div></body></html>`
+    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${escapeHtml(filename)}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;background:#fff;padding:32px;max-width:900px;margin:auto}h1{font-size:28px;margin:0 0 8px}p{color:#596675;margin:4px 0 18px}table{width:100%;border-collapse:collapse;margin-top:20px}td{padding:11px 5px;border-bottom:1px solid #e4e8ec}td:last-child{text-align:right;white-space:nowrap;font-weight:700}.total{margin-top:26px;padding:18px;background:#f5f7f9;font-size:23px;font-weight:700;text-align:right}.small{font-size:15px;line-height:1.7}@media print{body{padding:0}}</style></head><body><h1>Загальний кошторис об’єкта</h1><p>НСК — Натяжні Стелі Коломия<br>Замовник: ${escapeHtml(estimateProject.client || '—')} · Телефон: ${escapeHtml(estimateProject.phone || '—')}<br>Адреса: ${escapeHtml(estimateProject.address || '—')}<br>Дата заміру: ${formatMeasurementDate(estimateProject.measurementDate)}<br>${roomsHtml}</p><table>${rowsHtml}</table>${percent > 0 ? `<p>Знижка ${percent}%: −${moneyText(base-afterDiscount)}</p>` : ''}<div class="total">Разом за об’єкт: ${moneyText(total)}<div class="small">Завдаток: ${moneyText(deposit)}<br>Залишок до оплати: ${moneyText(balance)}</div></div></body></html>`
     if (format === 'pdf') {
       const win = window.open('', '_blank')
       if (!win) { alert('Дозволь спливаючі вікна для збереження PDF.'); return }
@@ -784,7 +827,7 @@ export default function App() {
       const ctx = canvas.getContext('2d')
       if (!ctx) { URL.revokeObjectURL(url); alert('Не вдалося створити JPEG.'); return }
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-      canvas.toBlob(file => { if (file) { const a = document.createElement('a'); const link = URL.createObjectURL(file); a.href = link; a.download = `koshtorys-objekt-${estimateProject.id}.jpg`; a.click(); URL.revokeObjectURL(link) } URL.revokeObjectURL(url) }, 'image/jpeg', 0.94)
+      canvas.toBlob(file => { if (file) { const a = document.createElement('a'); const link = URL.createObjectURL(file); a.href = link; a.download = `${filename}.jpg`; a.click(); URL.revokeObjectURL(link) } URL.revokeObjectURL(url) }, 'image/jpeg', 0.94)
     }
     img.onerror = () => { URL.revokeObjectURL(url); alert('Браузер не зміг сформувати JPEG. Спробуй PDF.') }
     img.src = url
@@ -905,7 +948,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.13</small>
+          <small>Версія 0.7.14</small>
         </div>
       </aside>
 
@@ -915,10 +958,12 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
+            <small>v0.7.14</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
         </header>
+        {updateAvailable && <div className="panel" style={{margin:12,borderColor:'#ffb900'}} role="status"><b>Доступне оновлення програми</b><p className="muted">Заверши редагування та збережи об’єкт перед перезапуском.</p><button className="button primary" disabled={!!storageWarning || cloud.busy} onClick={()=>{if(confirm('Перезапустити програму? Незбережені чернетки можуть бути втрачені.'))window.location.reload()}}>Оновити програму</button></div>}
         {(storageWarning || cloud.error || loginError && !loginOpen) && <div className="panel" style={{ margin: '12px', color: '#ffd4a3' }} role="alert">{storageWarning && <p>{storageWarning}</p>}{cloud.error && <p>{!networkOnline && /fetch|network/i.test(cloud.error) ? 'Немає інтернету. Дані залишаються на пристрої до синхронізації.' : cloud.error}</p>}{loginError && !loginOpen && <p>{loginError}</p>}</div>}
         {loginOpen && !cloud.session && <form className="panel form-panel" style={{ margin: '12px auto', maxWidth: 440 }} onSubmit={submitCloudLogin}>
           <h2>Вхід до Ceiling Designer Lite</h2>
@@ -1059,6 +1104,7 @@ export default function App() {
                   alert('Об’єкт і кошторис збережено.')
                 }}>Зберегти об’єкт</button>
                 <button className="button secondary" onClick={() => exportEstimate('pdf')}>Кошторис по кімнатах PDF</button>
+                <button className="button primary" onClick={() => exportEstimate('pdf', true)}>Детальний кошторис PDF</button>
                 <button className="button secondary" onClick={() => exportEstimate('jpeg')}>Кошторис по кімнатах JPEG</button>
                 <button className="button secondary" onClick={() => exportOverallEstimate('pdf')}>Загальний кошторис PDF</button>
                 <button className="button secondary" onClick={() => exportOverallEstimate('jpeg')}>Загальний кошторис JPEG</button>

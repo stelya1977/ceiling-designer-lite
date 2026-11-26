@@ -7,10 +7,11 @@ import { resolve } from 'node:path'
 // Build an offline app shell from the actual hashed Vite output, without extra dependencies.
 function offlineShell(): Plugin {
   let outDir: string
+  let release: string
   return {
     name: 'ceiling-offline-shell',
     apply: 'build',
-    configResolved(config) { outDir = resolve(config.root, config.build.outDir) },
+    configResolved(config) { outDir = resolve(config.root, config.build.outDir); release = JSON.parse(readFileSync(resolve(config.root, 'package.json'), 'utf8')).version },
     writeBundle: { order: 'post', handler() {
       function walk(dir: string, prefix = ''): string[] {
         return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
@@ -26,12 +27,15 @@ function offlineShell(): Plugin {
       const worker = `
 const CACHE_PREFIX = 'ceiling-designer-shell-';
 const CACHE = CACHE_PREFIX + '${version}';
+const RELEASE = ${JSON.stringify(release)};
 const FILES = ${JSON.stringify(files.map(f => '/' + f))};
 const FILE_SET = new Set(FILES);
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
     await cache.addAll(FILES.map(path => new Request(path, { cache: 'reload' })));
+    // Activate only after the complete new shell has been downloaded.
+    await self.skipWaiting();
   })());
 });
 self.addEventListener('activate', event => {
@@ -42,13 +46,16 @@ self.addEventListener('activate', event => {
     await self.clients.claim();
   })());
 });
+self.addEventListener('message', event => {
+  if (event.data?.type === 'CEILING_VERSION') event.source?.postMessage({ type: 'CEILING_VERSION', version: RELEASE });
+});
 self.addEventListener('fetch', event => {
   const request = event.request;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return; // Never cache Supabase or external services.
   if (request.mode === 'navigate' && (url.pathname === '/' || url.pathname === '/index.html')) {
-    // Keep HTML and hashed assets on the same release until all old tabs are closed.
+    // Serve the fully installed release as a coherent offline shell.
     event.respondWith((async () => {
       const cache = await caches.open(CACHE);
       return (await cache.match('/index.html')) || fetch(request);
