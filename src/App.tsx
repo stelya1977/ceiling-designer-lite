@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useCloud, supabase } from './cloud'
 import { StaffManager, JobAssignment, type JobPayload } from './Staff'
+import { consolidateMaterials, type InstallerMaterial } from './installerMaterials'
 import RoomComponents from './RoomComponents'
 import NumericInput from './NumericInput'
 import { activeStatuses, localDate, projectDate, payment, archive, restore, matchesDate, calendarDays, shiftMonth, type Workflow } from './projectWorkflow'
-import { categories, categoryOf, effectiveCatalog, newPricing, newSelection, calculate, snapshot, num, type DetailedPriceRow, type CatalogCategory, type CatalogItem, type RoomPricing, type Unit } from './pricing'
+import { categories, categoryOf, effectiveCatalog, newPricing, newSelection, calculate, snapshot, stockPlan, num, type DetailedPriceRow, type CatalogCategory, type CatalogItem, type RoomPricing, type Unit } from './pricing'
 import {
   Plus, Search, ChevronRight, House, ClipboardList, Layers3, Settings,
   X, ArrowLeft, Trash2, Ruler, RotateCcw, MapPin, Navigation, ImagePlus, Pencil, Sparkles, Download, Archive, CalendarDays
@@ -98,6 +99,7 @@ function readCatalog(): CatalogItem[] {
 
 type Project = Workflow & {
   id: string
+  workerReceiptId?: string
   client: string
   phone: string
   address: string
@@ -254,7 +256,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.17')
+        setUpdateAvailable(event.data.version !== '0.7.18')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -338,6 +340,7 @@ export default function App() {
   function markPayment(p:Project, paid:boolean) {
     const info=projectPayment(p)
     if(!p.completedAt || (paid && info.total<=0))return
+    if(p.workerReceiptId){alert('Оплату отримав монтажник. Запис збережено в обліку працівників.');return}
     if(!confirm(paid?`Підтвердити отримання залишку ${money(info.balance)}?`:'Скасувати позначку остаточної оплати? Завдаток залишиться.'))return
     syncProject({...p,finalPayment:paid?info.final+info.balance:0})
   }
@@ -384,6 +387,7 @@ export default function App() {
   }
 
   async function deleteProject(id: string) {
+    if(projects.find(p=>p.id===id)?.workerReceiptId){alert('Об’єкт має зареєстровану оплату монтажника. Його не можна видалити з історії.');return}
     if (!confirm('Видалити цей об’єкт разом з усіма кімнатами та розрахунками? Завдання монтажників також буде відкликано.')) return
     if (!cloud.session || !networkOnline) { alert('Для видалення об’єкта потрібен інтернет: спочатку треба відкликати завдання монтажників.'); return }
     const removed = await supabase.from('ceiling_jobs').delete().eq('owner_id',cloud.session.user.id).eq('project_id',id)
@@ -709,53 +713,29 @@ export default function App() {
       const n = Number(value || 0)
       return n > 0 ? `${n.toLocaleString('uk-UA', { maximumFractionDigits: 2 })} ${unit}` : '—'
     }
-    const totals: Record<string, { value: number; unit: string }> = {}
-    const skPurchases: Record<string, number> = {}
+    const allMaterials: InstallerMaterial[] = []
+    const warnings: string[] = []
     const rows = project.rooms.map((room, index) => {
       const c = { ...defaultComponents(), ...(room.components || {}) }
       const e = componentEstimate(room)
-      const items: string[] = []
-      const addTotal = (label: string, value: number, unit = 'м') => {
-        if (!(value > 0)) return
-        const key = `${label} (${unit})`
-        if (!totals[key]) totals[key] = { value: 0, unit }
-        totals[key].value += value
-      }
+      const addTotal = (label: string, value: number, unit = 'м') => { if (value > 0) allMaterials.push({label,quantity:value,unit}) }
       if(room.pricing){
         const m=calculate(room.pricing,roomArea(room)||0,roomPerimeter(room)||0)
-        for(const v of m.materials){items.push(`${v.label} — ${qty(v.quantity,v.unit)}`);addTotal(v.label,v.quantity,v.unit)}
-        if(m.overrun)items.push('УВАГА: довжина периметральних профілів перевищує периметр')
+        for(const v of m.materials)addTotal(v.label,v.quantity,v.unit)
+        if(m.overrun)warnings.push(`${room.name}: довжина периметральних профілів перевищує периметр`)
       }else{
-      const plasticLength=Math.max(0,(roomPerimeter(room)||0)-(c.flyEnabled?num(c.flyLength):0)-(c.udEnabled?num(c.udLength):0))
-      if(plasticLength>0){items.push(`Профіль пластиковий — ${qty(plasticLength)}`);addTotal('Профіль пластиковий',plasticLength)}
-      if (e.insertLength > 0) {
-        items.push(`Декоративна вставка (${c.insertColor === 'black' ? 'чорна' : 'біла'}) — ${qty(e.insertLength)}`)
-        addTotal(`Декоративна вставка (${c.insertColor === 'black' ? 'чорна' : 'біла'})`, e.insertLength)
-
-      }
-      if (c.flyEnabled && Number(c.flyLength) > 0) { const stockCount = Math.ceil(Number(c.flyLength) / 2); items.push(`ALUTAT FLY — ${qty(c.flyLength)} (планок по 2 м: ${stockCount} шт.)`); addTotal('ALUTAT FLY — планки по 2 м', stockCount, 'шт.') }
-      if (c.flyEnabled && Number(c.flyPower) > 0) { items.push(`Блоки живлення FLY — ${qty(c.flyPower, 'шт.')}`); addTotal('Блоки живлення FLY', Number(c.flyPower), 'шт.') }
-      if (c.flyEnabled && Number(c.flyGrilles) > 0) { items.push(`Магнітні решітки FLY — ${qty(c.flyGrilles, 'шт.')}`); addTotal('Магнітні решітки FLY', Number(c.flyGrilles), 'шт.') }
-      if (c.udEnabled && Number(c.udLength) > 0) { items.push(`Тіньовий профіль UD — ${qty(c.udLength)}`); addTotal('Тіньовий профіль UD', Number(c.udLength)) }
-      if (c.udEnabled && Number(c.udCorners) > 0) items.push(`Кути UD — ${qty(c.udCorners, 'шт.')}`)
-      e.skDetails.forEach((item, i) => {
-        if (Number(item.length) > 0) {
-          items.push(`Карниз SK 3.0 №${i+1} (${item.color === 'white' ? 'білий' : 'чорний'}) — ${qty(item.length)} (закупівля: ${qty(item.stock)})`); {
-            const color = item.color === 'white' ? 'білий' : 'чорний'
-            const stock = Number(item.stock)
-            const key = `${color}|${stock}`
-            skPurchases[key] = (skPurchases[key] || 0) + 1
-          }
-          if ((item.ledEnabled ?? Number(item.ledLength || 0) > 0) && Number(item.ledLength) > 0) { items.push(`LED ${item.ledColor || ''} для SK 3.0 №${i+1} — ${qty(item.ledLength)}`); addTotal(`LED ${item.ledColor || ''} для SK 3.0`, Number(item.ledLength)) }
-          if (Number(item.power) > 0) { items.push(`Блоки живлення SK 3.0 №${i+1} — ${qty(item.power, 'шт.')}`); addTotal('Блоки живлення SK 3.0', Number(item.power), 'шт.') }
-          if (Number(item.grilles) > 0) { items.push(`Магнітні решітки SK 3.0 №${i+1} — ${qty(item.grilles, 'шт.')}`); addTotal('Магнітні решітки SK 3.0', Number(item.grilles), 'шт.') }
-        }
-      })
-      if (Number(c.fn27Length) > 0) { items.push(`LED-профіль FN-27 — ${qty(c.fn27Length)} (планок по 2 м: ${Math.ceil(Number(c.fn27Length) / 2) + 1} шт.)`); addTotal(`FN-27 — ${Math.ceil(Number(c.fn27Length) / 2) + 1} × 2 м`, Math.ceil(Number(c.fn27Length) / 2) + 1, 'шт.') }
-      if (Number(c.fn27Power) > 0) { items.push(`Блоки живлення FN-27 — ${qty(c.fn27Power, 'шт.')}`); addTotal('Блоки живлення FN-27', Number(c.fn27Power), 'шт.') }
-      if (Number(c.fn27Grilles) > 0) { items.push(`Магнітні решітки FN-27 — ${qty(c.fn27Grilles, 'шт.')}`); addTotal('Магнітні решітки FN-27', Number(c.fn27Grilles), 'шт.') }
-      e.catalogItems.filter(item => Number(item.quantity || 0) > 0).forEach(item => { items.push(`${item.name} — ${qty(item.quantity, item.unit || 'шт.')}`); addTotal(item.name, Number(item.quantity), item.unit || 'шт.') })
-      if (Number(c.standardCorners) > 4) items.push(`Додаткові кути стандартного профілю — ${qty(Number(c.standardCorners) - 4, 'шт.')}`)
+        const plasticLength=Math.max(0,(roomPerimeter(room)||0)-(c.flyEnabled?num(c.flyLength):0)-(c.udEnabled?num(c.udLength):0))
+        addTotal('Полотно MSD Premium',e.area,'м²')
+        addTotal('Профіль пластиковий',plasticLength)
+        addTotal(`Декоративна вставка (${c.insertColor==='black'?'чорна':'біла'})`,e.insertLength)
+        if(c.flyEnabled&&num(c.flyLength)>0){addTotal('ALUTAT FLY — планка 2 м',Math.ceil(num(c.flyLength)/2),'шт.');addTotal('Кути — ALUTAT FLY',num(c.flyCorners),'шт.');addTotal('Блоки живлення FLY',num(c.flyPower),'шт.');addTotal('Магнітні решітки FLY',num(c.flyGrilles),'шт.')}
+        if(c.udEnabled&&num(c.udLength)>0){addTotal('Тіньовий профіль UD',num(c.udLength));addTotal('Кути UD',num(c.udCorners),'шт.')}
+        e.skDetails.forEach(item=>{if(!num(item.length))return;const name=`ALUTAT SK 3.0 (${item.color==='white'?'білий':'чорний'})`;stockPlan(num(item.length),'2;2.5;3.2;3.6').bars.forEach(b=>addTotal(`${name} — планка ${b.length} м`,b.count,'шт.'));if(item.ledEnabled??num(item.ledLength)>0)addTotal(`LED ${item.ledColor||'Тепле 3000K'} — ${name}`,num(item.ledLength));addTotal(`Блоки живлення — ${name}`,num(item.power),'шт.');addTotal(`Магнітні решітки — ${name}`,num(item.grilles),'шт.')})
+        if(num(c.fn27Length)>0)addTotal('FN-27 — планка 2 м',Math.ceil(num(c.fn27Length)/2)+1,'шт.')
+        addTotal('Блоки живлення FN-27',num(c.fn27Power),'шт.');addTotal('Магнітні решітки FN-27',num(c.fn27Grilles),'шт.')
+        e.catalogItems.forEach(item=>addTotal(item.name,num(item.quantity),item.unit||'шт.'))
+        addTotal('Додаткові кути стандартного профілю',Math.max(0,num(c.standardCorners)-4),'шт.')
+        if((c.flyEnabled?num(c.flyLength):0)+(c.udEnabled?num(c.udLength):0)>(roomPerimeter(room)||0)+1e-6)warnings.push(`${room.name}: довжина периметральних профілів перевищує периметр`)
       }
       let pts: Point[]
       if (room.shape === 'rectangle') {
@@ -775,30 +755,29 @@ export default function App() {
       } else {
         pts = room.vertices || regularVertices(room.sides?.length || 4)
       }
-      jobRooms.push({ name: room.name, canvas: room.canvasNumber || `Полотно №${index + 1}`, points: pts.map(p=>({x:Number(p.x),y:Number(p.y)})).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)), sides: room.shape==='rectangle' ? [{label:'AB',length:num(room.width)},{label:'BC',length:num(room.length)},{label:'CD',length:num(room.width)},{label:'DA',length:num(room.length)}] : room.sides.map(v=>({label:v.label,length:num(v.length)})), diagonals: Object.entries(room.diagonals||{}).map(([label,value])=>({label,length:num(value)})), materials: items })
+      jobRooms.push({ name: room.name, canvas: room.canvasNumber || `Полотно №${index + 1}`, points: pts.map(p=>({x:Number(p.x),y:Number(p.y)})).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)), sides: room.shape==='rectangle' ? [{label:'AB',length:num(room.width)},{label:'BC',length:num(room.length)},{label:'CD',length:num(room.width)},{label:'DA',length:num(room.length)}] : room.sides.map(v=>({label:v.label,length:num(v.length)})), diagonals: Object.entries(room.diagonals||{}).map(([label,value])=>({label,length:num(value)})), materials: [] })
       const polygon = pts.map(p => `${p.x},${p.y}`).join(' ')
       const drawing = `<svg class="mini" viewBox="0 0 360 224" role="img" aria-label="Креслення ${esc(room.name)}"><polygon points="${polygon}" fill="#f7f9fb" stroke="#263746" stroke-width="3"/><text x="180" y="112" text-anchor="middle" font-size="13" font-weight="bold" fill="#222">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text><text x="180" y="215" text-anchor="middle" font-size="12" fill="#667">Схема контуру</text></svg>`
-      return `<section class="room"><h2>${esc(room.name)}</h2><div class="roomgrid"><ul>${items.length ? items.map(item => `<li>${esc(item)}</li>`).join('') : '<li>Комплектуючі не вказані</li>'}</ul>${drawing}</div></section>`
+      const roomData=jobRooms[jobRooms.length-1]
+      const dimensions=roomData.sides.map(v=>`${v.label}: ${qty(v.length)}`).join(' · ')
+      const diagonals=roomData.diagonals.filter(v=>v.length>0).map(v=>`${v.label}: ${qty(v.length)}`).join(' · ')
+      return `<section class="room"><h2>${esc(room.name)}</h2><div class="roomgrid"><div><p>${esc(roomData.canvas)}</p><p>${esc(dimensions)}</p>${diagonals?`<p>Діагоналі: ${esc(diagonals)}</p>`:''}</div>${drawing}</div></section>`
     }).join('')
-    Object.entries(skPurchases).forEach(([key, count]) => {
-      const [color, stockText] = key.split('|')
-      const stock = Number(stockText)
-      const label = `Карниз SK 3.0 (${color}), планка ${String(stock).replace('.', ',')} м`
-      totals[label] = { value: count, unit: 'шт.' }
-    })
-    const summaryHtml = Object.entries(totals).map(([label, item]) => `<li><b>${esc(label)}</b> — ${qty(item.value, item.unit)}</li>`).join('')
+    const totals=consolidateMaterials(allMaterials)
+    const summaryHtml = totals.map(line=>`<li>${esc(line)}</li>`).join('')
+    const warningsHtml = warnings.map(line=>`<p><b>УВАГА:</b> ${esc(line)}</p>`).join('')
     const mapUrl = project.locationLat != null && project.locationLng != null
       ? `https://www.google.com/maps?q=${project.locationLat},${project.locationLng}`
       : project.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(project.address)}` : ''
-    const payload: JobPayload = {client:project.client, phone:project.phone, address:project.address, mapUrl, rooms:jobRooms, totals:Object.entries(totals).map(([label,item])=>`${label} — ${qty(item.value,item.unit)}`)}
-    return {rows,summaryHtml,mapUrl,payload}
+    const payload: JobPayload = {client:project.client, phone:project.phone, address:project.address, mapUrl, rooms:jobRooms, totals,warnings}
+    return {rows,summaryHtml,mapUrl,payload,warningsHtml}
   }
   function exportWorkerTask() {
     const project=active
     if(!project)return
     const esc=escapeHtml
-    const {rows,summaryHtml,mapUrl}=buildWorkerTask(project)
-    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Монтаж'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;padding:28px;max-width:900px;margin:auto}h1{font-size:26px;margin:0 0 14px}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:7px;margin-top:24px}p{margin:7px 0}ul{padding-left:22px}li{padding:5px 0;font-size:16px}.roomgrid{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:14px;align-items:start}.mini{width:100%;max-height:145px;border:1px solid #d8dee5;border-radius:6px;background:#fff}.map{display:inline-block;margin-top:10px;padding:10px 14px;background:#eef3f8;border-radius:6px;color:#174c83;text-decoration:none;font-weight:bold}.room{page-break-inside:avoid} @page{size:A4;margin:15mm}@media print{body{padding:0}.roomgrid{grid-template-columns:minmax(0,1fr) 190px}.mini{max-height:130px}}</style></head><body><h1>Завдання монтажникам</h1><p><b>Об'єкт:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p><p><b>Адреса:</b> ${esc(project.address || 'Не вказана')}</p>${mapUrl ? `<a class="map" href="${mapUrl}">Відкрити маршрут у Google Maps</a>` : ''}${rows}<section><h2>ЗІБРАТИ НА ОБ'ЄКТ — ЗАГАЛЬНИЙ СПИСОК</h2><ul>${summaryHtml || '<li>Комплектуючі не вказані</li>'}</ul></section><p style="margin-top:28px;color:#667">НСК — Натяжні Стелі Коломия</p></body></html>`
+    const {rows,summaryHtml,mapUrl,warningsHtml}=buildWorkerTask(project)
+    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Монтаж'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;padding:28px;max-width:900px;margin:auto}h1{font-size:26px;margin:0 0 14px}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:7px;margin-top:24px}p{margin:7px 0}ul{padding-left:22px}li{padding:5px 0;font-size:16px}.roomgrid{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:14px;align-items:start}.mini{width:100%;max-height:145px;border:1px solid #d8dee5;border-radius:6px;background:#fff}.map{display:inline-block;margin-top:10px;padding:10px 14px;background:#eef3f8;border-radius:6px;color:#174c83;text-decoration:none;font-weight:bold}.room{page-break-inside:avoid} @page{size:A4;margin:15mm}@media print{body{padding:0}.roomgrid{grid-template-columns:minmax(0,1fr) 190px}.mini{max-height:130px}}</style></head><body><h1>Завдання монтажникам</h1><p><b>Об'єкт:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p><p><b>Адреса:</b> ${esc(project.address || 'Не вказана')}</p>${mapUrl ? `<a class="map" href="${mapUrl}">Відкрити маршрут у Google Maps</a>` : ''}${warningsHtml}<section><h2>ЩО ВЗЯТИ НА ОБ’ЄКТ</h2><ul>${summaryHtml || '<li>Комплектуючі не вказані</li>'}</ul></section>${rows}<p style="margin-top:28px;color:#667">НСК — Натяжні Стелі Коломия</p></body></html>`
     const win = window.open('', '_blank')
     if (!win) { alert('Дозволь спливаючі вікна, щоб сформувати PDF.'); return }
     win.document.open(); win.document.write(html); win.document.close()
@@ -967,7 +946,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.17</small>
+          <small>Версія 0.7.18</small>
         </div>
       </aside>
 
@@ -977,7 +956,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.17</small>
+            <small>v0.7.18</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1530,10 +1509,10 @@ export default function App() {
                 <button className="button" style={{ background: '#7f2525', color: '#fff' }} onClick={() => deleteProject(active.id)}><Trash2 size={15}/> Видалити об’єкт</button>
               </div>
             </div>
-            {cloud.session && <JobAssignment key={active.id} owner={cloud.session.user.id} projectId={active.id} disabled={!!active.archivedAt || cloud.status!=='Синхронізовано' || cloud.busy || !!cloud.conflict} build={()=>({payload:buildWorkerTask(active).payload,balance:projectPayment(active).balance})} onAcceptCompletion={()=>archiveActive(true)}/>}
+            {cloud.session && <JobAssignment key={active.id} owner={cloud.session.user.id} projectId={active.id} disabled={(!!active.archivedAt && !active.completedAt) || cloud.status!=='Синхронізовано' || cloud.busy || !!cloud.conflict} build={()=>({payload:buildWorkerTask(active).payload,balance:projectPayment(active).balance,final:projectPayment(active).final,project:active})} onAcceptCompletion={()=>archiveActive(true)} onPaymentSync={()=>void cloud.sync()}/>}
             {active.completedAt && <div className="panel" style={{marginBottom:18}}>
               <h2>Оплата виконаного об’єкта</h2>
-              {(()=>{const info=projectPayment(active);return <><div className="info-row"><span>Статус оплати</span><b style={{color:info.paid?'#60c692':'#ffc247'}}>{info.paid?'Оплачено':'Не оплачено'}</b></div><div className="info-row"><span>Вартість замовлення</span><b>{money(info.total)}</b></div><div className="info-row"><span>Завдаток</span><b>{money(info.deposit)}</b></div>{info.final>0&&<div className="info-row"><span>Остаточна оплата</span><b>{money(info.final)}</b></div>}<div className="info-row"><span>Залишок до оплати</span><b>{money(info.balance)}</b></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button className="button primary" disabled={info.paid||info.total<=0} onClick={()=>markPayment(active,true)}>Оплачено</button><button className="button secondary" disabled={!info.final} onClick={()=>markPayment(active,false)}>Скасувати остаточну оплату</button></div>{info.total<=0&&<p className="muted">Спочатку сформуй кошторис.</p>}</>})()}
+              {(()=>{const info=projectPayment(active);return <><div className="info-row"><span>Статус оплати</span><b style={{color:info.paid?'#60c692':'#ffc247'}}>{info.paid?'Оплачено':'Не оплачено'}</b></div><div className="info-row"><span>Вартість замовлення</span><b>{money(info.total)}</b></div><div className="info-row"><span>Завдаток</span><b>{money(info.deposit)}</b></div>{info.final>0&&<div className="info-row"><span>Остаточна оплата</span><b>{money(info.final)}</b></div>}<div className="info-row"><span>Залишок до оплати</span><b>{money(info.balance)}</b></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button className="button primary" disabled={info.paid||info.total<=0} onClick={()=>markPayment(active,true)}>Оплачено</button><button className="button secondary" disabled={!info.final||!!active.workerReceiptId} onClick={()=>markPayment(active,false)}>Скасувати остаточну оплату</button></div>{info.total<=0&&<p className="muted">Спочатку сформуй кошторис.</p>}</>})()}
             </div>}
             <div className="detail-grid">
               <div className="panel">
