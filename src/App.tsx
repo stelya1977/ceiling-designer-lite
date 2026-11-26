@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useCloud, supabase } from './cloud'
 import { StaffManager, JobAssignment, type JobPayload } from './Staff'
 import OwnerCalendar from './OwnerCalendar'
+import type {PayrollEstimate} from './payrollMath'
 import { consolidateMaterials, type InstallerMaterial } from './installerMaterials'
 import RoomComponents from './RoomComponents'
 import NumericInput from './NumericInput'
@@ -257,7 +258,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.21')
+        setUpdateAvailable(event.data.version !== '0.7.22')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -608,6 +609,27 @@ export default function App() {
     })
   }
 
+  // Payroll uses the private synchronized estimate, not the worker packing list.
+  function payrollEstimate(raw: unknown): PayrollEstimate {
+    const project=raw as Project
+    if(!project||!Array.isArray(project.rooms))throw new Error('Некоректний кошторис для зарплати')
+    const sections=estimateRows(project)
+    const lines=sections.flatMap(section=>{
+      const room=section.room
+      if(room.pricing){
+        const zero=room.pricing.items.filter(s=>num(s.quantity)>0&&num(s.item.price)===0).map(s=>({label:s.item.name,quantity:num(s.quantity),unit:s.item.unit,unitPrice:0,amount:0}))
+        return [...section.detailedRows,...zero]
+      }
+      const e=componentEstimate(room)
+      const rows=section.detailedRows.filter(r=>!/^Карниз SK 3\.0 №/.test(r.label))
+      const detail=(label:string,quantity:number,unit:string,unitPrice:number)=>{if(quantity>0)rows.push({label,quantity,unit,unitPrice,amount:quantity*unitPrice})}
+      for(const item of e.skDetails){const name=`ALUTAT SK 3.0 (${item.color==='white'?'білий':'чорний'})`;detail(name,item.stock,'м',2200);if(item.ledEnabled??num(item.ledLength)>0)detail(`LED ${item.ledColor||'Тепле 3000K'} — ${name}`,num(item.ledLength),'м',250);detail(`Блоки живлення — ${name}`,num(item.power),'шт.',600);detail(`Магнітні решітки — ${name}`,num(item.grilles),'шт.',900)}
+      for(const item of e.catalogItems)if(num(item.price)===0)detail(item.name,num(item.quantity),item.unit,0)
+      return rows
+    })
+    return {total:projectPayment(project).total,lines}
+  }
+
   function openEstimate(project: Project, fromCreate = false) {
     setEstimateProject({ ...project, measurementDate: projectDate(project) })
     setEstimateReturnToCreate(fromCreate)
@@ -953,7 +975,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.21</small>
+          <small>Версія 0.7.22</small>
         </div>
       </aside>
 
@@ -963,7 +985,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.21</small>
+            <small>v0.7.22</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -987,7 +1009,7 @@ export default function App() {
           </div>
         </div>}
 
-        {ownerPage ? (cloud.session ? (ownerPage==='staff' ? <StaffManager key={cloud.session.user.id} owner={cloud.session.user.id}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
+        {ownerPage ? (cloud.session ? (ownerPage==='staff' ? <StaffManager key={cloud.session.user.id} owner={cloud.session.user.id} estimate={payrollEstimate} labels={[...availableCatalog.map(v=>v.name),'Блоки живлення','Магнітні решітки','Монтаж світильників']}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
           <section className="content narrow">
             <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування позиціями та базовими цінами. Дані зберігаються локально та синхронізуються після входу.</p></div></div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
