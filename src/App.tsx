@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
-import { useCloud } from './cloud'
+import { useCloud, supabase } from './cloud'
+import { StaffManager, JobAssignment, type JobPayload } from './Staff'
 import RoomComponents from './RoomComponents'
 import NumericInput from './NumericInput'
 import { activeStatuses, localDate, projectDate, payment, archive, restore, matchesDate, calendarDays, shiftMonth, type Workflow } from './projectWorkflow'
@@ -203,6 +204,7 @@ export default function App() {
   const [catalog, setCatalog] = useState<CatalogItem[]>(readCatalog)
   const availableCatalog = useMemo(() => effectiveCatalog(catalog), [catalog])
   const [catalogPage, setCatalogPage] = useState(false)
+  const [staffOpen, setStaffOpen] = useState(false)
   const [catalogCategory, setCatalogCategory] = useState<CatalogCategory>('Профілі')
   const [editingCatalogId, setEditingCatalogId] = useState<string | null>(null)
   const emptyCatalogDraft = { category: 'Профілі' as CatalogCategory, name: '', price: '', unit: 'м' as Unit, stockLength: '', cornerPrice: '0', freeCorners: '0', description: '', billStock: false, ledPrice: '', powerPrice: '', grillePrice: '' }
@@ -252,7 +254,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.16')
+        setUpdateAvailable(event.data.version !== '0.7.17')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -381,8 +383,11 @@ export default function App() {
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
   }
 
-  function deleteProject(id: string) {
-    if (!confirm('Видалити цей об’єкт разом з усіма кімнатами та розрахунками?')) return
+  async function deleteProject(id: string) {
+    if (!confirm('Видалити цей об’єкт разом з усіма кімнатами та розрахунками? Завдання монтажників також буде відкликано.')) return
+    if (!cloud.session || !networkOnline) { alert('Для видалення об’єкта потрібен інтернет: спочатку треба відкликати завдання монтажників.'); return }
+    const removed = await supabase.from('ceiling_jobs').delete().eq('owner_id',cloud.session.user.id).eq('project_id',id)
+    if (removed.error) { alert('Не вдалося відкликати завдання: '+removed.error.message); return }
     setProjects(prev => prev.filter(p => p.id !== id))
     setActive(null)
     setActiveRoomId(null)
@@ -697,9 +702,8 @@ export default function App() {
     setTimeout(() => { win.focus(); win.print() }, 350)
   }
 
-  function exportWorkerTask() {
-    const project = active
-    if (!project) return
+  function buildWorkerTask(project: Project) {
+    const jobRooms: JobPayload['rooms'] = []
     const esc = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
     const qty = (value: unknown, unit = 'м') => {
       const n = Number(value || 0)
@@ -771,6 +775,7 @@ export default function App() {
       } else {
         pts = room.vertices || regularVertices(room.sides?.length || 4)
       }
+      jobRooms.push({ name: room.name, canvas: room.canvasNumber || `Полотно №${index + 1}`, points: pts.map(p=>({x:Number(p.x),y:Number(p.y)})).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)), sides: room.shape==='rectangle' ? [{label:'AB',length:num(room.width)},{label:'BC',length:num(room.length)},{label:'CD',length:num(room.width)},{label:'DA',length:num(room.length)}] : room.sides.map(v=>({label:v.label,length:num(v.length)})), diagonals: Object.entries(room.diagonals||{}).map(([label,value])=>({label,length:num(value)})), materials: items })
       const polygon = pts.map(p => `${p.x},${p.y}`).join(' ')
       const drawing = `<svg class="mini" viewBox="0 0 360 224" role="img" aria-label="Креслення ${esc(room.name)}"><polygon points="${polygon}" fill="#f7f9fb" stroke="#263746" stroke-width="3"/><text x="180" y="112" text-anchor="middle" font-size="13" font-weight="bold" fill="#222">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text><text x="180" y="215" text-anchor="middle" font-size="12" fill="#667">Схема контуру</text></svg>`
       return `<section class="room"><h2>${esc(room.name)}</h2><div class="roomgrid"><ul>${items.length ? items.map(item => `<li>${esc(item)}</li>`).join('') : '<li>Комплектуючі не вказані</li>'}</ul>${drawing}</div></section>`
@@ -785,6 +790,14 @@ export default function App() {
     const mapUrl = project.locationLat != null && project.locationLng != null
       ? `https://www.google.com/maps?q=${project.locationLat},${project.locationLng}`
       : project.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(project.address)}` : ''
+    const payload: JobPayload = {client:project.client, phone:project.phone, address:project.address, mapUrl, rooms:jobRooms, totals:Object.entries(totals).map(([label,item])=>`${label} — ${qty(item.value,item.unit)}`)}
+    return {rows,summaryHtml,mapUrl,payload}
+  }
+  function exportWorkerTask() {
+    const project=active
+    if(!project)return
+    const esc=escapeHtml
+    const {rows,summaryHtml,mapUrl}=buildWorkerTask(project)
     const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Монтаж'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;padding:28px;max-width:900px;margin:auto}h1{font-size:26px;margin:0 0 14px}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:7px;margin-top:24px}p{margin:7px 0}ul{padding-left:22px}li{padding:5px 0;font-size:16px}.roomgrid{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:14px;align-items:start}.mini{width:100%;max-height:145px;border:1px solid #d8dee5;border-radius:6px;background:#fff}.map{display:inline-block;margin-top:10px;padding:10px 14px;background:#eef3f8;border-radius:6px;color:#174c83;text-decoration:none;font-weight:bold}.room{page-break-inside:avoid} @page{size:A4;margin:15mm}@media print{body{padding:0}.roomgrid{grid-template-columns:minmax(0,1fr) 190px}.mini{max-height:130px}}</style></head><body><h1>Завдання монтажникам</h1><p><b>Об'єкт:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p><p><b>Адреса:</b> ${esc(project.address || 'Не вказана')}</p>${mapUrl ? `<a class="map" href="${mapUrl}">Відкрити маршрут у Google Maps</a>` : ''}${rows}<section><h2>ЗІБРАТИ НА ОБ'ЄКТ — ЗАГАЛЬНИЙ СПИСОК</h2><ul>${summaryHtml || '<li>Комплектуючі не вказані</li>'}</ul></section><p style="margin-top:28px;color:#667">НСК — Натяжні Стелі Коломия</p></body></html>`
     const win = window.open('', '_blank')
     if (!win) { alert('Дозволь спливаючі вікна, щоб сформувати PDF.'); return }
@@ -947,13 +960,14 @@ export default function App() {
           <button className={`nav-item ${!catalogPage&&projectView==='archive'?'active':''}`} onClick={() => navigateProjects('archive')}><Archive size={18}/>Архів</button>
           <button className={`nav-item ${!catalogPage&&projectView==='calendar'?'active':''}`} onClick={() => navigateProjects('calendar')}><CalendarDays size={18}/>Календар замірів</button>
           <button className="nav-item" onClick={() => { setCatalogPage(true); setActive(null); setActiveRoomId(null); setCreating(false); setEstimateProject(null) }}><Layers3 size={18}/>Каталог</button>
+          <button className="nav-item" onClick={()=>setStaffOpen(true)}><ClipboardList size={18}/>Працівники</button>
           <button className="nav-item" disabled><ClipboardList size={18}/>Кошториси</button>
         </nav>
         <div className="sidebar-bottom">
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.16</small>
+          <small>Версія 0.7.17</small>
         </div>
       </aside>
 
@@ -963,7 +977,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.16</small>
+            <small>v0.7.17</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1516,6 +1530,7 @@ export default function App() {
                 <button className="button" style={{ background: '#7f2525', color: '#fff' }} onClick={() => deleteProject(active.id)}><Trash2 size={15}/> Видалити об’єкт</button>
               </div>
             </div>
+            {cloud.session && <JobAssignment key={active.id} owner={cloud.session.user.id} projectId={active.id} disabled={!!active.archivedAt || cloud.status!=='Синхронізовано' || cloud.busy || !!cloud.conflict} build={()=>({payload:buildWorkerTask(active).payload,balance:projectPayment(active).balance})} onAcceptCompletion={()=>archiveActive(true)}/>}
             {active.completedAt && <div className="panel" style={{marginBottom:18}}>
               <h2>Оплата виконаного об’єкта</h2>
               {(()=>{const info=projectPayment(active);return <><div className="info-row"><span>Статус оплати</span><b style={{color:info.paid?'#60c692':'#ffc247'}}>{info.paid?'Оплачено':'Не оплачено'}</b></div><div className="info-row"><span>Вартість замовлення</span><b>{money(info.total)}</b></div><div className="info-row"><span>Завдаток</span><b>{money(info.deposit)}</b></div>{info.final>0&&<div className="info-row"><span>Остаточна оплата</span><b>{money(info.final)}</b></div>}<div className="info-row"><span>Залишок до оплати</span><b>{money(info.balance)}</b></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button className="button primary" disabled={info.paid||info.total<=0} onClick={()=>markPayment(active,true)}>Оплачено</button><button className="button secondary" disabled={!info.final} onClick={()=>markPayment(active,false)}>Скасувати остаточну оплату</button></div>{info.total<=0&&<p className="muted">Спочатку сформуй кошторис.</p>}</>})()}
@@ -1589,6 +1604,7 @@ export default function App() {
             <div className="prototype-note"><span className="status-dot"/> Дані зберігаються на цьому пристрої. Після входу доступна хмарна синхронізація.</div>
           </section>
         )}
+        {staffOpen && cloud.session && <StaffManager owner={cloud.session.user.id} onClose={()=>setStaffOpen(false)}/>}
         {locationOpen && active && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18 }}>
             <div className="panel" style={{ width: 'min(560px, 100%)', maxHeight: '90vh', overflowY: 'auto', border: '1px solid #e5a900', boxShadow: '0 20px 70px rgba(0,0,0,.45)' }}>

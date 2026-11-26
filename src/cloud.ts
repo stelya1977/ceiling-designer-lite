@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createClient, type Session } from '@supabase/supabase-js'
 
 // The publishable key is intended for browser use. Row-level security is required.
-const supabase = createClient(
+export const supabase = createClient(
   'https://geusdieajvcnuzgbaygj.supabase.co',
   'sb_publishable_kwJarKeqWLeGlSgVU8ToIA_MUHUHHnb'
 )
@@ -79,6 +79,9 @@ export function useCloud<P, C>(workspace: Workspace<P, C>, apply: (w: Workspace<
       pendingConflict.current = null; setConflict(null); setStatus('Синхронізовано')
     }
     try {
+      const access = await supabase.from('ceiling_admins').select('user_id').eq('user_id',uid).maybeSingle()
+      if (!valid()) return
+      if (access.error || !access.data) throw new Error('Синхронізація доступна лише власнику')
       const result = await supabase.from('ceiling_workspace').select('projects,catalog,revision,updated_at').eq('user_id', uid).maybeSingle()
       if (!valid()) return
       if (result.error) throw result.error
