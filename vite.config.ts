@@ -49,6 +49,28 @@ self.addEventListener('activate', event => {
 self.addEventListener('message', event => {
   if (event.data?.type === 'CEILING_VERSION') event.source?.postMessage({ type: 'CEILING_VERSION', version: RELEASE });
 });
+self.addEventListener('push', event => {
+  // No client names, addresses, or payment amounts on a locked phone.
+  let id = '';
+  try { id = event.data?.json()?.id || ''; } catch {}
+  event.waitUntil(self.registration.showNotification('НСК · Нове сповіщення', {
+    body: 'Відкрий кабінет монтажника, щоб переглянути повідомлення.',
+    icon: '/icon-192.png', badge: '/icon-192.png', tag: id ? 'nsk-' + id : 'nsk-push',
+    data: { path: '/?notifications=1' }
+  }));
+});
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const tabs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const tab of tabs) {
+      if (new URL(tab.url).origin === self.location.origin) {
+        await tab.focus(); tab.postMessage({ type: 'CEILING_OPEN_NOTIFICATIONS' }); return;
+      }
+    }
+    await self.clients.openWindow('/?notifications=1');
+  })());
+});
 self.addEventListener('fetch', event => {
   const request = event.request;
   if (request.method !== 'GET') return;
