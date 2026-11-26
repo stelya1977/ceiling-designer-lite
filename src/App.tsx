@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useCloud, supabase } from './cloud'
 import { StaffManager, JobAssignment, type JobPayload } from './Staff'
 import OwnerCalendar from './OwnerCalendar'
+import Finance from './Finance'
+import {reviseDeposit,assignDepositDate,kyivDay,type MoneyPart,type CashRow} from './financeMath'
 import type {PayrollEstimate} from './payrollMath'
 import { consolidateMaterials, type InstallerMaterial } from './installerMaterials'
 import RoomComponents from './RoomComponents'
@@ -102,6 +104,8 @@ function readCatalog(): CatalogItem[] {
 type Project = Workflow & {
   id: string
   workerReceiptId?: string
+  depositParts?: MoneyPart[]
+  finalParts?: MoneyPart[]
   client: string
   phone: string
   address: string
@@ -208,7 +212,7 @@ export default function App() {
   const [catalog, setCatalog] = useState<CatalogItem[]>(readCatalog)
   const availableCatalog = useMemo(() => effectiveCatalog(catalog), [catalog])
   const [catalogPage, setCatalogPage] = useState(false)
-  const [ownerPage,setOwnerPage]=useState<'staff'|'mounts'|null>(null)
+  const [ownerPage,setOwnerPage]=useState<'staff'|'mounts'|'finance'|null>(null)
   const [catalogCategory, setCatalogCategory] = useState<CatalogCategory>('Профілі')
   const [editingCatalogId, setEditingCatalogId] = useState<string | null>(null)
   const emptyCatalogDraft = { category: 'Профілі' as CatalogCategory, name: '', price: '', unit: 'м' as Unit, stockLength: '', cornerPrice: '0', freeCorners: '0', description: '', billStock: false, ledPrice: '', powerPrice: '', grillePrice: '' }
@@ -333,9 +337,18 @@ export default function App() {
     if(creating && (client.trim()||phone.trim()||address.trim()||roomName.trim()||rooms.length) && !confirm('Вийти зі створення об’єкта? Незбережена чернетка буде втрачена.'))return
     setOwnerPage(null);setProjectView(view);setCatalogPage(false);setCreating(false);setEstimateProject(null);setActive(null);setActiveRoomId(null);setQuery('')
   }
-  function navigateOwner(page:'staff'|'mounts') {
+  function navigateOwner(page:'staff'|'mounts'|'finance') {
     if(creating && (client.trim()||phone.trim()||address.trim()||roomName.trim()||rooms.length) && !confirm('Вийти зі створення об’єкта? Незбережена чернетка буде втрачена.'))return
     setOwnerPage(page);setCatalogPage(false);setCreating(false);setEstimateProject(null);setActive(null);setActiveRoomId(null);setQuery('')
+  }
+  function openFinanceProject(id:string) {
+    const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає у локальних даних. Синхронізуй програму.');return}
+    setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)
+  }
+  function dateLegacyPayment(row:CashRow,day:string,totalCents:number){
+    if(row.kind==='worker')return
+    if(cloud.status!=='Синхронізовано'){alert('Спочатку синхронізуй програму.');return}
+    setProjects(prev=>prev.map(p=>p.id!==row.id?p:row.kind==='deposit'?{...p,depositParts:assignDepositDate(p.deposit,p.depositParts,day)}:{...p,finalParts:assignDepositDate(totalCents/100,p.finalParts,day)}))
   }
   function archiveActive(complete:boolean) {
     if(!active || active.archivedAt)return
@@ -348,7 +361,8 @@ export default function App() {
     if(!p.completedAt || (paid && info.total<=0))return
     if(p.workerReceiptId){alert('Оплату отримав монтажник. Запис збережено в обліку працівників.');return}
     if(!confirm(paid?`Підтвердити отримання залишку ${money(info.balance)}?`:'Скасувати позначку остаточної оплати? Завдаток залишиться.'))return
-    syncProject({...p,finalPayment:paid?info.final+info.balance:0})
+    const finalPayment=paid?info.final+info.balance:0
+    syncProject({...p,finalPayment,finalParts:reviseDeposit(info.final,p.finalParts,finalPayment,kyivDay(new Date().toISOString())!)})
   }
 
   function resetForm() {
@@ -472,7 +486,7 @@ export default function App() {
 
   function updateEstimateDeposit(value: string) {
     if (!estimateProject) return
-    const updated = { ...estimateProject, deposit: value }
+    const updated = { ...estimateProject, deposit: value, depositParts:reviseDeposit(estimateProject.deposit,estimateProject.depositParts,value,kyivDay(new Date().toISOString())!) }
     setEstimateProject(updated)
     if (estimateProject.id !== 'Чернетка') {
       setProjects(prev => prev.map(p => p.id === updated.id ? updated : p))
@@ -969,6 +983,7 @@ export default function App() {
           <button className={`nav-item ${catalogPage?'active':''}`} onClick={() => { setOwnerPage(null);setCatalogPage(true); setActive(null); setActiveRoomId(null); setCreating(false); setEstimateProject(null) }}><Layers3 size={18}/>Каталог</button>
           <button className={`nav-item ${ownerPage==='mounts'?'active':''}`} onClick={()=>navigateOwner('mounts')}><CalendarDays size={18}/>Календар монтажів</button>
           <button className={`nav-item ${ownerPage==='staff'?'active':''}`} onClick={()=>navigateOwner('staff')}><ClipboardList size={18}/>Працівники</button>
+          <button className={`nav-item ${ownerPage==='finance'?'active':''}`} onClick={()=>navigateOwner('finance')}><ClipboardList size={18}/>Фінанси</button>
           <button className="nav-item" disabled><ClipboardList size={18}/>Кошториси</button>
         </nav>
         <div className="sidebar-bottom">
@@ -1009,7 +1024,7 @@ export default function App() {
           </div>
         </div>}
 
-        {ownerPage ? (cloud.session ? (ownerPage==='staff' ? <StaffManager key={cloud.session.user.id} owner={cloud.session.user.id} estimate={payrollEstimate} labels={[...availableCatalog.map(v=>v.name),'Блоки живлення','Магнітні решітки','Монтаж світильників']}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
+        {ownerPage ? (cloud.session ? (ownerPage==='finance' ? <Finance key={cloud.session.user.id} owner={cloud.session.user.id} projects={projects.map(p=>({...p,...projectPayment(p)}))} syncStatus={cloud.status} onOpen={openFinanceProject} onDate={dateLegacyPayment}/> : ownerPage==='staff' ? <StaffManager key={cloud.session.user.id} owner={cloud.session.user.id} estimate={payrollEstimate} labels={[...availableCatalog.map(v=>v.name),'Блоки живлення','Магнітні решітки','Монтаж світильників']}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
           <section className="content narrow">
             <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування позиціями та базовими цінами. Дані зберігаються локально та синхронізуються після входу.</p></div></div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
@@ -1102,7 +1117,8 @@ export default function App() {
                   <div className="info-row"><b>Загальна сума</b><b>{money(payable)}</b></div>
                   {percent > 0 && <div className="info-row"><span>Знижка ({percent}%)</span><b>−{money(base-afterDiscount)}</b></div>}
                   <label style={{ ...labelStyle, marginTop: 8 }}>Внесений завдаток, грн
-                    <NumericInput key={estimateProject.id + "-deposit"} style={inputStyle} integer value={estimateProject.deposit || ''} onChange={updateEstimateDeposit} placeholder="Введи суму завдатку" />
+                    <NumericInput key={estimateProject.id + "-deposit"} style={inputStyle} integer commitOnBlur value={estimateProject.deposit || ''} onChange={updateEstimateDeposit} placeholder="Введи суму завдатку" />
+                    <p className="muted">Зміна суми зберігається після виходу з поля. Додана сума отримує сьогоднішню дату; зменшення виправляє останні записи. Старі дати можна вказати у «Фінансах».</p>
                   </label>
                   <div className="info-row" style={{ fontSize: 18 }}><b>Залишок до оплати</b><b style={{ color: '#ffc247' }}>{money(payment(base,estimateProject).balance)}</b></div>
                   {payment(base,estimateProject).final>0 && <div className="info-row"><span>Остаточна оплата</span><b>{money(payment(base,estimateProject).final)}</b></div>}

@@ -12,13 +12,14 @@ export function parseNumericDraft(raw: string, integer = false, max?: number): s
   return String(n)
 }
 
-export default function NumericInput({ value, onChange, placeholder, style, integer = false, max }: {
+export default function NumericInput({ value, onChange, placeholder, style, integer = false, max, commitOnBlur = false }: {
   value: string | number | undefined
   onChange: (value: string) => void
   placeholder?: string
   style?: CSSProperties
   integer?: boolean
   max?: number
+  commitOnBlur?: boolean
 }) {
   const stored = value == null ? '' : String(value).replace('.', ',')
   const [draft, setDraft] = useState<string | null>(null)
@@ -33,8 +34,8 @@ export default function NumericInput({ value, onChange, placeholder, style, inte
         return
       }
       setDraft(next)
-      onChange(parsed)
+      if (!commitOnBlur) onChange(parsed)
     }}
-    onBlur={() => setDraft(null)}
+    onBlur={e => { if(commitOnBlur){const parsed=parseNumericDraft(e.currentTarget.value,integer,max);if(parsed!==undefined&&parsed!==String(value??''))onChange(parsed)} setDraft(null) }}
     onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() } }} />
 }
