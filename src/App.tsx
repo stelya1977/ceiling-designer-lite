@@ -256,7 +256,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.18')
+        setUpdateAvailable(event.data.version !== '0.7.19')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -716,6 +716,7 @@ export default function App() {
     const allMaterials: InstallerMaterial[] = []
     const warnings: string[] = []
     const rows = project.rooms.map((room, index) => {
+      const roomStart = allMaterials.length
       const c = { ...defaultComponents(), ...(room.components || {}) }
       const e = componentEstimate(room)
       const addTotal = (label: string, value: number, unit = 'м') => { if (value > 0) allMaterials.push({label,quantity:value,unit}) }
@@ -755,7 +756,7 @@ export default function App() {
       } else {
         pts = room.vertices || regularVertices(room.sides?.length || 4)
       }
-      jobRooms.push({ name: room.name, canvas: room.canvasNumber || `Полотно №${index + 1}`, points: pts.map(p=>({x:Number(p.x),y:Number(p.y)})).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)), sides: room.shape==='rectangle' ? [{label:'AB',length:num(room.width)},{label:'BC',length:num(room.length)},{label:'CD',length:num(room.width)},{label:'DA',length:num(room.length)}] : room.sides.map(v=>({label:v.label,length:num(v.length)})), diagonals: Object.entries(room.diagonals||{}).map(([label,value])=>({label,length:num(value)})), materials: [] })
+      jobRooms.push({ name: room.name, canvas: room.canvasNumber || `Полотно №${index + 1}`, points: pts.map(p=>({x:Number(p.x),y:Number(p.y)})).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)), sides: room.shape==='rectangle' ? [{label:'AB',length:num(room.width)},{label:'BC',length:num(room.length)},{label:'CD',length:num(room.width)},{label:'DA',length:num(room.length)}] : room.sides.map(v=>({label:v.label,length:num(v.length)})), diagonals: Object.entries(room.diagonals||{}).map(([label,value])=>({label,length:num(value)})), materials: consolidateMaterials(allMaterials.slice(roomStart)) })
       const polygon = pts.map(p => `${p.x},${p.y}`).join(' ')
       const drawing = `<svg class="mini" viewBox="0 0 360 224" role="img" aria-label="Креслення ${esc(room.name)}"><polygon points="${polygon}" fill="#f7f9fb" stroke="#263746" stroke-width="3"/><text x="180" y="112" text-anchor="middle" font-size="13" font-weight="bold" fill="#222">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text><text x="180" y="215" text-anchor="middle" font-size="12" fill="#667">Схема контуру</text></svg>`
       const roomData=jobRooms[jobRooms.length-1]
@@ -769,7 +770,7 @@ export default function App() {
     const mapUrl = project.locationLat != null && project.locationLng != null
       ? `https://www.google.com/maps?q=${project.locationLat},${project.locationLng}`
       : project.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(project.address)}` : ''
-    const payload: JobPayload = {client:project.client, phone:project.phone, address:project.address, mapUrl, rooms:jobRooms, totals,warnings}
+    const payload: JobPayload = {client:project.client, phone:project.phone, address:project.address, mapUrl, rooms:jobRooms, totals,warnings, roomDetailsVersion: 1}
     return {rows,summaryHtml,mapUrl,payload,warningsHtml}
   }
   function exportWorkerTask() {
@@ -946,7 +947,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.18</small>
+          <small>Версія 0.7.19</small>
         </div>
       </aside>
 
@@ -956,7 +957,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.18</small>
+            <small>v0.7.19</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
