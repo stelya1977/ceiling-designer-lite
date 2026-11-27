@@ -267,7 +267,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.29')
+        setUpdateAvailable(event.data.version !== '0.7.30')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -1069,7 +1069,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.29</small>
+          <small>Версія 0.7.30</small>
         </div>
       </aside>
 
@@ -1079,7 +1079,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.29</small>
+            <small>v0.7.30</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1243,7 +1243,7 @@ export default function App() {
             </div>
           </section>
         ) : active && activeRoom ? (
-          <section className="content narrow" style={roomSection === 'visualization' ? { maxWidth: 'none', width: '100%' } : undefined}>
+          <section key={`room-${active.id}-${activeRoom.id}`} className="content narrow" style={roomSection === 'visualization' ? { maxWidth: 'none', width: '100%' } : undefined}>
             <button className="back-link" onClick={() => setActiveRoomId(null)}>
               <ArrowLeft size={16}/> До об’єкта {active.client}
             </button>
@@ -1611,7 +1611,7 @@ export default function App() {
             )}
           </section>
         ) : active ? (
-          <section className="content">
+          <section key={`project-${active.id}`} className="content">
             <button className="back-link" onClick={() => setActive(null)}><ArrowLeft size={16}/> До списку об’єктів</button>
             <div className="page-heading">
               <div><div className="eyebrow">ОБ’ЄКТ · {active.id}</div><h1>{active.client}</h1><p className="muted">Створено {new Date(active.created).toLocaleDateString('uk-UA')}</p></div>
@@ -1629,8 +1629,8 @@ export default function App() {
                 <button className="button" style={{ background: '#7f2525', color: '#fff' }} onClick={() => deleteProject(active.id)}><Trash2 size={15}/> Видалити об’єкт</button>
               </div>
             </div>
-            {cloud.session && <JobAssignment key={active.id} owner={cloud.session.user.id} projectId={active.id} disabled={(!!active.archivedAt && !active.completedAt) || cloud.status!=='Синхронізовано' || cloud.busy || !!cloud.conflict} build={()=>{if(missingBounds(active))throw new Error('Введи габаритні розміри для кошторису перед публікацією.');return {payload:buildWorkerTask(active).payload,balance:projectPayment(active).balance,final:projectPayment(active).final,project:active}}} onAcceptCompletion={()=>archiveActive(true)} onPaymentSync={()=>void cloud.sync()}/>}
-            {cloud.session && <JobPhotos key={active.id} owner={cloud.session.user.id} project={active.id} admin/>}
+            {cloud.session && <JobAssignment key={`assignment-${active.id}`} owner={cloud.session.user.id} projectId={active.id} disabled={(!!active.archivedAt && !active.completedAt) || cloud.status!=='Синхронізовано' || cloud.busy || !!cloud.conflict} build={()=>{if(missingBounds(active))throw new Error('Введи габаритні розміри для кошторису перед публікацією.');return {payload:buildWorkerTask(active).payload,balance:projectPayment(active).balance,final:projectPayment(active).final,project:active}}} onAcceptCompletion={()=>archiveActive(true)} onPaymentSync={()=>void cloud.sync()}/>}
+            {cloud.session && <JobPhotos key={`photos-${active.id}`} owner={cloud.session.user.id} project={active.id} admin/>}
             {active.completedAt && <div className="panel" style={{marginBottom:18}}>
               <h2>Оплата виконаного об’єкта</h2>
               {(()=>{const info=projectPayment(active);return <><div className="info-row"><span>Статус оплати</span><b style={{color:info.paid?'#60c692':'#ffc247'}}>{info.paid?'Оплачено':'Не оплачено'}</b></div><div className="info-row"><span>Вартість замовлення</span><b>{money(info.total)}</b></div><div className="info-row"><span>Завдаток</span><b>{money(info.deposit)}</b></div>{info.final>0&&<div className="info-row"><span>Остаточна оплата</span><b>{money(info.final)}</b></div>}<div className="info-row"><span>Залишок до оплати</span><b>{money(info.balance)}</b></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button className="button primary" disabled={info.paid||info.total<=0} onClick={()=>markPayment(active,true)}>Оплачено</button><button className="button secondary" disabled={!info.final||!!active.workerReceiptId} onClick={()=>markPayment(active,false)}>Скасувати остаточну оплату</button></div>{info.total<=0&&<p className="muted">Спочатку сформуй кошторис.</p>}</>})()}
