@@ -14,7 +14,7 @@ export function projectBusinessCost(needs:CostNeed[],warnings:string[],value:Obj
  return {material:cents(sum.known),materialComplete:sum.complete,frozen:!!snap&&!stale,wages:priceValue(value.wages)===null?null:cents(value.wages),extra:priceValue(value.extra)===null?null:cents(value.extra),fuel:transportTotal(value.transport)?.cents??null,actual:cents(actual.known),actualCount:actual.count,actualMissing:actual.missing,reason:[...warnings,...(stale?['Застаріла фіксація матеріалів']:[]),...(sum.missing?[`Без закупівельної ціни: ${sum.missing}`]:[]),...(!lines.length?['Немає матеріалів для розрахунку']:[])]}
 }
 export function businessSummary(completed:{id:string;client:string;day:string;total:number}[],costs:Record<string,BusinessCost>,warehouse:WarehouseData,period:Period){
- const objects=completed.map(p=>{const c=costs[p.id],complete=!!c&&c.materialComplete&&c.wages!==null&&c.extra!==null&&c.fuel!=null;return {...p,c,complete,profit:complete?p.total-c.material-c.wages!-c.extra!-c.fuel!:null}})
+ const objects=completed.map(p=>{const c=costs[p.id],complete=!!c&&c.materialComplete&&c.extra!==null&&c.fuel!=null;return {...p,c,complete,profit:complete?p.total-c.material-c.extra!-c.fuel!:null}})
  const sum=(f:(r:typeof objects[number])=>number)=>objects.reduce((n,r)=>n+f(r),0)
  const rows=movements(warehouse).filter(m=>['sale','writeoff','receipt'].includes(m.kind))
  const dated=rows.filter(m=>inPeriod(kyivDay(m.at),period)),unknown=rows.filter(m=>!kyivDay(m.at)).length
