@@ -1,11 +1,11 @@
 import type {Consumable,ConsumableNeed} from './consumables'
 import NumericInput from './NumericInput'
-import {costLines,costSignature,summarizeCosts,type CostNeed,type ObjectCosts} from './objectCost'
+import {costLines,costSignature,normalizeCostSignature,summarizeCosts,type CostNeed,type ObjectCosts} from './objectCost'
 import type {CatalogItem} from './pricing'
 const money=(n:number)=>n.toLocaleString('uk-UA',{minimumFractionDigits:2,maximumFractionDigits:2})+' грн'
 const qty=(n:number)=>n.toLocaleString('uk-UA',{maximumFractionDigits:3})
 export default function ObjectFinance({needs,warnings,catalog,rules,adjustments,revenue,received,balance,value,onChange}:{needs:CostNeed[];warnings:string[];catalog:CatalogItem[];rules:Consumable[];adjustments:{room:string;item:ConsumableNeed}[];revenue:number;received:number;balance:number;value:ObjectCosts;onChange:(v:ObjectCosts)=>void}){
- const signature=costSignature(needs),snapshot=value.snapshot,stale=!!snapshot&&snapshot.signature!==signature
+ const signature=costSignature(needs),snapshot=value.snapshot,stale=!!snapshot&&normalizeCostSignature(snapshot.signature)!==normalizeCostSignature(signature)
  const current=costLines(needs,catalog,rules),lines=snapshot?snapshot.lines:current
  const summary=summarizeCosts(lines,revenue,value.wages,value.extra,!stale&&!warnings.length)
  const canFreeze=needs.length>0&&!warnings.length&&current.every(r=>r.amount!==null)

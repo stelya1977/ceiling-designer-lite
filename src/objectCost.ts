@@ -33,6 +33,14 @@ export function costLines(needs:CostNeed[],catalog:CatalogItem[],rules:Consumabl
 export function costSignature(needs:CostNeed[]):string{
  return JSON.stringify(needs.map(n=>[n.roomId,n.room,n.itemId,n.field,n.label,n.quantity,n.unit,n.priceUnit]).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))))
 }
+// Recognize the two default-name migrations without invalidating historical costs.
+export function normalizeCostSignature(signature:string):string{
+ try {
+  const rows=JSON.parse(signature) as unknown[][]
+  if(!Array.isArray(rows)||!rows.every(r=>Array.isArray(r)&&r.length===8))return signature
+  return JSON.stringify(rows.map(r=>{const x=[...r];if(x[2]==='cornice-bracket'&&x[4]==='Кутик для карниза / FN-27')x[4]='Кут металічний';if(x[2]==='light-support'&&x[4]==='Підвіс / кутик для світильника')x[4]='Підвіс';return x}).sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))))
+ }catch{return signature}
+}
 export function summarizeCosts(lines:CostLine[],revenue:number,wages:unknown,extra:unknown,valid:boolean){
  const missing=lines.filter(l=>l.amount===null).length,known=Math.round(lines.reduce((n,l)=>n+(l.amount??0),0)*100)/100
  const labor=priceValue(wages),expenses=priceValue(extra),complete=valid&&lines.length>0&&missing===0
