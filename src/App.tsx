@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useCloud, supabase } from './cloud'
 import JobPhotos,{hasJobPhotos} from './JobPhotos'
+import {ObserverEstimateButton} from './Observer'
 import { StaffManager, JobAssignment, type JobPayload } from './Staff'
 import OwnerCalendar from './OwnerCalendar'
 import Finance from './Finance'
@@ -359,7 +360,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.41')
+        setUpdateAvailable(event.data.version !== '0.7.42')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -1251,7 +1252,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.41</small>
+          <small>Версія 0.7.42</small>
         </div>
       </aside>
 
@@ -1261,7 +1262,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.41</small>
+            <small>v0.7.42</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1811,6 +1812,7 @@ export default function App() {
                 <button className="button" style={{ background: '#7f2525', color: '#fff' }} onClick={() => deleteProject(active.id)}><Trash2 size={15}/> Видалити об’єкт</button>
               </div>
             </div>
+            {cloud.session && <ObserverEstimateButton key={`observer-estimate-${active.id}`} projectId={active.id} disabled={cloud.status!=='Синхронізовано'||cloud.busy||!!cloud.conflict} build={()=>({total:projectPayment(active).total,lines:estimateRows(active).flatMap(section=>section.detailedRows.map(row=>({room:section.room.name,label:row.label,quantity:row.quantity,unit:row.unit,unitPrice:row.unitPrice,amount:row.amount})))})}/>}
             {cloud.session && <JobAssignment key={`assignment-${active.id}`} owner={cloud.session.user.id} projectId={active.id} disabled={(!!active.archivedAt && !active.completedAt) || cloud.status!=='Синхронізовано' || cloud.busy || !!cloud.conflict} build={()=>{if(unverifiedMeasuredRooms(active).length)throw new Error('Перевір геометрію стель перед публікацією: '+unverifiedMeasuredRooms(active).map(r=>r.name).join(', '));if(missingBounds(active))throw new Error('Введи габаритні розміри для кошторису перед публікацією.');return {payload:buildWorkerTask(active).payload,balance:projectPayment(active).balance,final:projectPayment(active).final,project:active}}} onAcceptCompletion={()=>archiveActive(true)} onPaymentSync={()=>void cloud.sync()}/>}
             {cloud.session && <JobPhotos key={`photos-${active.id}`} owner={cloud.session.user.id} project={active.id} admin/>}
             {active.completedAt && <div className="panel" style={{marginBottom:18}}>
