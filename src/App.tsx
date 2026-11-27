@@ -56,6 +56,8 @@ type Room = {
   diagonals?: Record<string, string>
   overallWidth?: string
   overallHeight?: string
+  estimateAreaMode?: 'real' | 'bounds'
+  actualAreaOverride?: string
   pricing?: RoomPricing
   components?: {
     ceiling: 'fabric'
@@ -265,7 +267,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.28')
+        setUpdateAvailable(event.data.version !== '0.7.29')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -524,9 +526,29 @@ export default function App() {
     updateRoom(room.id, { components: { ...defaultComponents(), ...(room.components || {}), ...patch } })
   }
 
-  function roomArea(room: Room) {
+  function positiveAreaNumber(value: unknown): number | null {
+    const n = Number(value)
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+
+  function actualRoomArea(room: Room): number | null {
     if (room.shape === 'rectangle') return room.length && room.width ? room.length * room.width : null
+    if (room.actualAreaOverride != null && room.actualAreaOverride !== '') return positiveAreaNumber(room.actualAreaOverride)
     return polygonArea(room)
+  }
+
+  function boundsRoomArea(room: Room): number | null {
+    const width = positiveAreaNumber(room.overallWidth), height = positiveAreaNumber(room.overallHeight)
+    if (width === null || height === null) return null
+    return positiveAreaNumber(width * height)
+  }
+
+  function roomArea(room: Room): number | null {
+    return room.shape === 'polygon' && room.estimateAreaMode === 'bounds' ? boundsRoomArea(room) : actualRoomArea(room)
+  }
+
+  function missingBounds(project: Project): boolean {
+    return project.rooms.some(room => room.shape === 'polygon' && room.estimateAreaMode === 'bounds' && boundsRoomArea(room) === null)
   }
 
   function roomPerimeter(room: Room) {
@@ -669,6 +691,7 @@ export default function App() {
 
   function exportEstimate(format: 'pdf' | 'jpeg', detailed = false) {
     if (!estimateProject) return
+    if (missingBounds(estimateProject)) { alert('Введи габаритну ширину й висоту в усіх кімнатах, де вибрано «По габаритах».'); return }
     const sections = estimateRows(estimateProject)
     const base = sections.reduce((sum, section) => sum + section.total, 0)
     const discounted = base * (1 - Math.min(100,num(discountPercent)) / 100)
@@ -756,12 +779,12 @@ export default function App() {
       const e = componentEstimate(room)
       const addTotal = (label: string, value: number, unit = 'м') => { if (value > 0) allMaterials.push({label,quantity:value,unit}) }
       if(room.pricing){
-        const m=calculate(room.pricing,roomArea(room)||0,roomPerimeter(room)||0)
+        const m=calculate(room.pricing,actualRoomArea(room)||0,roomPerimeter(room)||0)
         for(const v of m.materials)addTotal(v.label,v.quantity,v.unit)
         if(m.overrun)warnings.push(`${room.name}: довжина периметральних профілів перевищує периметр`)
       }else{
         const plasticLength=Math.max(0,(roomPerimeter(room)||0)-(c.flyEnabled?num(c.flyLength):0)-(c.udEnabled?num(c.udLength):0))
-        addTotal('Полотно MSD Premium',e.area,'м²')
+        addTotal('Полотно MSD Premium',actualRoomArea(room)||0,'м²')
         addTotal('Профіль пластиковий',plasticLength)
         addTotal(`Декоративна вставка (${c.insertColor==='black'?'чорна':'біла'})`,e.insertLength)
         if(c.flyEnabled&&num(c.flyLength)>0){addTotal('ALUTAT FLY — планка 2 м',Math.ceil(num(c.flyLength)/2),'шт.');addTotal('Кути — ALUTAT FLY',num(c.flyCorners),'шт.');addTotal('Блоки живлення FLY',num(c.flyPower),'шт.');addTotal('Магнітні решітки FLY',num(c.flyGrilles),'шт.')}
@@ -773,6 +796,7 @@ export default function App() {
         addTotal('Додаткові кути стандартного профілю',Math.max(0,num(c.standardCorners)-4),'шт.')
         if((c.flyEnabled?num(c.flyLength):0)+(c.udEnabled?num(c.udLength):0)>(roomPerimeter(room)||0)+1e-6)warnings.push(`${room.name}: довжина периметральних профілів перевищує периметр`)
       }
+      if(room.shape==='polygon' && room.estimateAreaMode==='bounds' && actualRoomArea(room)===null)warnings.push(`${room.name}: фактична площа полотна не вказана; дивись креслення`)
       let pts: Point[]
       if (room.shape === 'rectangle') {
         const length = Math.max(0.01, Number(room.length) || 1)
@@ -920,11 +944,32 @@ export default function App() {
         </div>)}
       </div>
       <h3 style={{marginTop:20}}>Габаритні розміри</h3>
-      <p className="muted">Фактичні максимальні габарити стелі. Не впливають на кошторис.</p>
+      <p className="muted">Фактичні максимальні габарити стелі. Для складної форми можуть використовуватися для кошторису.</p>
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))',gap:12}}>
         <label style={labelStyle}>Габаритна ширина, м<NumericInput key={room.id+'overallWidth'} style={inputStyle} value={room.overallWidth} onChange={v=>updateRoom(room.id,{overallWidth:v})} placeholder="0,000"/></label>
         <label style={labelStyle}>Габаритна висота, м<NumericInput key={room.id+'overallHeight'} style={inputStyle} value={room.overallHeight} onChange={v=>updateRoom(room.id,{overallHeight:v})} placeholder="0,000"/></label>
       </div>
+    </div>
+  }
+
+  function areaModeEditor(room: Room) {
+    const mode = room.estimateAreaMode === 'bounds' ? 'bounds' : 'real'
+    const real = actualRoomArea(room), bounds = boundsRoomArea(room), billable = roomArea(room)
+    const fmtArea = (value: number | null) => value === null ? '—' : `${formatNumber(value)} м²`
+    return <div style={{marginTop:20,padding:14,border:'1px solid #e5a900',borderRadius:10}}>
+      <h3 style={{marginTop:0}}>Площа для кошторису</h3>
+      <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:12}}>
+        {([['real','Реальна'],['bounds','По габаритах']] as const).map(([value,label])=><button key={value} type="button" aria-pressed={mode===value} style={{...buttonStyle,background:mode===value?'#ffb900':'#405263',color:mode===value?'#18222c':'#fff'}} onClick={()=>updateRoom(room.id,{estimateAreaMode:value})}>{label}</button>)}
+      </div>
+      <label style={labelStyle}>Реальна площа вручну, м² (необов’язково)
+        <NumericInput key={room.id+'actualAreaOverride'} style={inputStyle} value={room.actualAreaOverride} onChange={v=>updateRoom(room.id,{actualAreaOverride:v})} placeholder="Порожньо — розрахунок за замірами"/>
+      </label>
+      <p className="muted">Для Г-подібної чи іншої увігнутої стелі можна внести перевірену фактичну площу (наприклад, суму площ прямокутників). Очисти поле, щоб повернути автоматичний розрахунок трикутниками.</p>
+      <div className="info-row"><span>Реальна площа {room.actualAreaOverride ? '(вручну)' : '(розрахункова)'}</span><b>{fmtArea(real)}</b></div>
+      <div className="info-row"><span>Площа по габаритах (ширина × висота)</span><b>{fmtArea(bounds)}</b></div>
+      <div className="room-area"><span>До кошторису</span><strong>{fmtArea(billable)}</strong></div>
+      {billable===null && <p style={{color:'#ffd27a'}}>{mode==='bounds'?'Введи обидва габарити вище.':'Введи сторони й діагоналі або реальну площу вручну.'}</p>}
+      <p className="muted">Вибір впливає на вартість полотна в кошторисі. Креслення та фактичний периметр не змінюються.</p>
     </div>
   }
 
@@ -1024,7 +1069,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.28</small>
+          <small>Версія 0.7.29</small>
         </div>
       </aside>
 
@@ -1034,7 +1079,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.28</small>
+            <small>v0.7.29</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1132,7 +1177,8 @@ export default function App() {
                 const qty = (label: string, value: number) => value > 0 ? <div className="info-row" key={label}><span>{label}</span><b>{formatNumber(value)} шт.</b></div> : null
                 return <>
                   <h2 style={{ marginTop: 0 }}>Загальні обсяги об’єкта</h2>
-                  {metric('Полотно, площа', area, 'м²')}
+                  {metric('Полотно, площа для кошторису', area, 'м²')}
+                  {missingBounds(estimateProject)&&<p style={{color:'#ffd27a'}}>У деяких кімнатах не введено габарити для розрахунку полотна. Кошторис неповний.</p>}
                   {metric('Периметр кімнат', perimeter, 'пог. м')}
                   {metric('Декоративна вставка', insertLength, 'пог. м')}
                   {metric('ALUTAT FLY', flyLength, 'пог. м')}
@@ -1445,10 +1491,6 @@ export default function App() {
                 </div>
                 {extraMeasurements(activeRoom)}
                 <div className="room-area">
-                  <span>Розрахункова площа</span>
-                  <strong>{polygonArea(activeRoom) === null ? 'Введи сторони й діагоналі' : `${formatNumber(polygonArea(activeRoom)!)} м²`}</strong>
-                </div>
-                <div className="room-area">
                   <span>Периметр</span>
                   <strong>{activeRoom.length && activeRoom.width ? `${formatNumber(2 * (activeRoom.length + activeRoom.width))} м` : '—'}</strong>
                 </div>
@@ -1553,10 +1595,7 @@ export default function App() {
                   ))}
                 </div>
                 {extraMeasurements(activeRoom)}
-                <div className="room-area">
-                  <span>Розрахункова площа</span>
-                  <strong>{polygonArea(activeRoom) === null ? 'Введи сторони й діагоналі' : `${formatNumber(polygonArea(activeRoom)!)} м²`}</strong>
-                </div>
+                {areaModeEditor(activeRoom)}
                 <div className="room-area">
                   <span>Периметр</span>
                   <strong>{activeRoom.sides.every(s => s.length.trim() !== '' && Number(s.length) > 0)
@@ -1590,7 +1629,7 @@ export default function App() {
                 <button className="button" style={{ background: '#7f2525', color: '#fff' }} onClick={() => deleteProject(active.id)}><Trash2 size={15}/> Видалити об’єкт</button>
               </div>
             </div>
-            {cloud.session && <JobAssignment key={active.id} owner={cloud.session.user.id} projectId={active.id} disabled={(!!active.archivedAt && !active.completedAt) || cloud.status!=='Синхронізовано' || cloud.busy || !!cloud.conflict} build={()=>({payload:buildWorkerTask(active).payload,balance:projectPayment(active).balance,final:projectPayment(active).final,project:active})} onAcceptCompletion={()=>archiveActive(true)} onPaymentSync={()=>void cloud.sync()}/>}
+            {cloud.session && <JobAssignment key={active.id} owner={cloud.session.user.id} projectId={active.id} disabled={(!!active.archivedAt && !active.completedAt) || cloud.status!=='Синхронізовано' || cloud.busy || !!cloud.conflict} build={()=>{if(missingBounds(active))throw new Error('Введи габаритні розміри для кошторису перед публікацією.');return {payload:buildWorkerTask(active).payload,balance:projectPayment(active).balance,final:projectPayment(active).final,project:active}}} onAcceptCompletion={()=>archiveActive(true)} onPaymentSync={()=>void cloud.sync()}/>}
             {cloud.session && <JobPhotos key={active.id} owner={cloud.session.user.id} project={active.id} admin/>}
             {active.completedAt && <div className="panel" style={{marginBottom:18}}>
               <h2>Оплата виконаного об’єкта</h2>
