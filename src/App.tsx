@@ -6,6 +6,8 @@ import { StaffManager, JobAssignment, type JobPayload } from './Staff'
 import OwnerCalendar from './OwnerCalendar'
 import Finance from './Finance'
 import Warehouse from './Warehouse'
+import StockAlertButton from './StockAlertButton'
+import {stockAlerts} from './stockAlerts'
 import {includesDemand,warehouseFromCatalog,type StockRow,type WarehouseData} from './warehouse'
 import ObjectFinance from './ObjectFinance'
 import {inventoryAdjustment,actualMaterialCost,movements,reservations} from './stockMovement'
@@ -320,6 +322,7 @@ export default function App() {
   const [consumablesPage,setConsumablesPage]=useState(false)
   function saveConsumables(rules:Consumable[]){setCatalog(items=>effectiveCatalog(items).map(item=>item.id==='standard-profile'?{...item,consumables:rules}:item))}
   const [catalogPage, setCatalogPage] = useState(false)
+  const [warehouseTarget,setWarehouseTarget]=useState<{tab:'need'|'stock'|'buy';project:string;nonce:number}>({tab:'need',project:'all',nonce:0})
   const [ownerPage,setOwnerPage]=useState<'staff'|'mounts'|'finance'|'warehouse'|null>(null)
   const [catalogCategory, setCatalogCategory] = useState<CatalogCategory>('Профілі')
   const [editingCatalogId, setEditingCatalogId] = useState<string | null>(null)
@@ -372,7 +375,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.51')
+        setUpdateAvailable(event.data.version !== '0.7.52')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -449,7 +452,7 @@ export default function App() {
   }
   function navigateOwner(page:'staff'|'mounts'|'finance'|'warehouse') {
     if(creating && (client.trim()||phone.trim()||address.trim()||city.trim()||roomName.trim()||rooms.length) && !confirm('Вийти зі створення об’єкта? Незбережена чернетка буде втрачена.'))return
-    setOwnerPage(page);setCatalogPage(false);setCreating(false);setEstimateProject(null);setActive(null);setActiveRoomId(null);setQuery('')
+    setOwnerPage(page);setCatalogPage(false);setCreating(false);setEstimateProject(null);setActive(null);setActiveRoomId(null);setQuery('');if(page==='warehouse')setWarehouseTarget(v=>({tab:'need',project:'all',nonce:v.nonce+1}));return true
   }
   function openFinanceProject(id:string) {
     const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає у локальних даних. Синхронізуй програму.');return}
@@ -1278,6 +1281,11 @@ export default function App() {
     gap: 8
   } as const
 
+  const warehouseData=useMemo(()=>warehouseFromCatalog(catalog),[catalog])
+  const demandProjects=useMemo(()=>projects.filter(includesDemand).map(p=>({id:p.id,label:[projectObjectName(p),p.client,p.id].filter(Boolean).join(' · '),status:p.status,date:projectDate(p),...projectCostNeeds(p)})),[projects,catalog])
+  const warehouseAlerts=useMemo(()=>stockAlerts(availableCatalog,consumableRules,warehouseData,demandProjects),[availableCatalog,consumableRules,warehouseData,demandProjects])
+  function openAlertObject(id:string){const p=projects.find(p=>p.id===id);if(!p)return false;if(creating&&(client.trim()||phone.trim()||address.trim()||city.trim()||roomName.trim()||rooms.length)&&!confirm('Вийти зі створення об’єкта? Незбережена чернетка буде втрачена.'))return false;setOwnerPage(null);setCatalogPage(false);setCreating(false);setEstimateProject(null);setProjectView('active');setActiveRoomId(null);setActive(p);return true}
+  function openAlertWarehouse(tab:'need'|'stock'|'buy',id='all'){if(!navigateOwner('warehouse'))return false;setWarehouseTarget(v=>({tab,project:id,nonce:v.nonce+1}));return true}
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -1300,17 +1308,18 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.51</small>
+          <small>Версія 0.7.52</small>
         </div>
       </aside>
 
       <main className="main">
         <header className="topbar">
           <div className="mobile-brand">НСК <span>CEILING DESIGNER</span></div>
+          {cloud.session&&<StockAlertButton alerts={warehouseAlerts} stale={!!cloud.conflict||!networkOnline||cloud.status!=='Синхронізовано'} onObject={openAlertObject} onWarehouse={openAlertWarehouse}/>}
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.51</small>
+            <small>v0.7.52</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1334,7 +1343,7 @@ export default function App() {
           </div>
         </div>}
 
-        {ownerPage ? (cloud.session ? (ownerPage==='warehouse' ? <Warehouse catalog={availableCatalog} rules={consumableRules} data={warehouseFromCatalog(catalog)} projects={projects.filter(includesDemand).map(p=>({id:p.id,label:[projectObjectName(p),p.client,p.id].filter(Boolean).join(' · '),status:p.status,...projectCostNeeds(p)}))} onSave={saveWarehouse} onUpdate={updateWarehouse} onToggle={row=>saveWarehouse({...row,excluded:!row.excluded},row.quantity)} onOpen={id=>{const p=projects.find(p=>p.id===id);if(p){setOwnerPage(null);setProjectView('active');setActiveRoomId(null);setActive(p)}}} canEdit={!cloud.conflict&&(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація'))} syncStatus={cloud.status}/> : ownerPage==='finance' ? <Finance key={cloud.session.user.id} owner={cloud.session.user.id} projects={projects.map(p=>({...p,...projectPayment(p)}))} syncStatus={cloud.status} onOpen={openFinanceProject} onDate={dateLegacyPayment}/> : ownerPage==='staff' ? <StaffManager key={cloud.session.user.id} owner={cloud.session.user.id} estimate={payrollEstimate} labels={[...availableCatalog.map(v=>v.name),'Блоки живлення','Магнітні решітки','Монтаж світильників']}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
+        {ownerPage ? (cloud.session ? (ownerPage==='warehouse' ? <Warehouse key={warehouseTarget.nonce} initialTab={warehouseTarget.tab} initialProject={warehouseTarget.project} catalog={availableCatalog} rules={consumableRules} data={warehouseData} projects={demandProjects} onSave={saveWarehouse} onUpdate={updateWarehouse} onToggle={row=>saveWarehouse({...row,excluded:!row.excluded},row.quantity)} onOpen={id=>{const p=projects.find(p=>p.id===id);if(p){setOwnerPage(null);setProjectView('active');setActiveRoomId(null);setActive(p)}}} canEdit={!cloud.conflict&&(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація'))} syncStatus={cloud.status}/> : ownerPage==='finance' ? <Finance key={cloud.session.user.id} owner={cloud.session.user.id} projects={projects.map(p=>({...p,...projectPayment(p)}))} syncStatus={cloud.status} onOpen={openFinanceProject} onDate={dateLegacyPayment}/> : ownerPage==='staff' ? <StaffManager key={cloud.session.user.id} owner={cloud.session.user.id} estimate={payrollEstimate} labels={[...availableCatalog.map(v=>v.name),'Блоки живлення','Магнітні решітки','Монтаж світильників']}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
           <section className="content narrow">
             <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування цінами продажу та закупівлі. Закупівельні ціни не змінюють кошторис клієнта. Дані зберігаються локально та синхронізуються після входу.</p></div></div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
