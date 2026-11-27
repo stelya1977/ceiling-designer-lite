@@ -296,7 +296,7 @@ function projectObjectName(project: Pick<Project, 'city' | 'address' | 'client' 
 
 function exportName(project: Project, kind: string) {
   const [, month, day] = projectDate(project).split('-')
-  const name = (kind === 'Розкрій' ? projectObjectName(project) : (project.client || project.id || 'Об’єкт')).replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ').replace(/\s+/g,' ').trim().replace(/[. ]+$/g,'').slice(0,100) || 'Об’єкт'
+  const name = ((kind === 'Розкрій' || kind === 'Монтаж') ? projectObjectName(project) : (project.client || project.id || 'Об’єкт')).replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ').replace(/\s+/g,' ').trim().replace(/[. ]+$/g,'').slice(0,100) || 'Об’єкт'
   return `${name} ${day}${month} - ${kind}`
 }
 function formatNumber(n: number) {
@@ -359,7 +359,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.40')
+        setUpdateAvailable(event.data.version !== '0.7.41')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -958,7 +958,7 @@ export default function App() {
     const mapUrl = project.locationLat != null && project.locationLng != null
       ? `https://www.google.com/maps?q=${project.locationLat},${project.locationLng}`
       : project.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(project.address)}` : ''
-    const payload: JobPayload = {client:project.client, phone:project.phone, address:project.address, mapUrl, rooms:jobRooms, totals,warnings, roomDetailsVersion: 1}
+    const payload: JobPayload = {objectName:projectObjectName(project),client:project.client, phone:project.phone, address:project.address, mapUrl, rooms:jobRooms, totals,warnings, roomDetailsVersion: 1}
     return {rows,summaryHtml,mapUrl,payload,warningsHtml}
   }
   function exportWorkerTask() {
@@ -968,7 +968,7 @@ export default function App() {
     if(invalid.length){alert('Перевір геометрію перед друком: '+invalid.map(r=>r.name).join(', '));return}
     const esc=escapeHtml
     const {rows,summaryHtml,mapUrl,warningsHtml}=buildWorkerTask(project)
-    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Монтаж'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;padding:28px;max-width:900px;margin:auto}h1{font-size:26px;margin:0 0 14px}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:7px;margin-top:24px}p{margin:7px 0}ul{padding-left:22px}li{padding:5px 0;font-size:16px}.roomgrid{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:14px;align-items:start}.mini{width:100%;max-height:145px;border:1px solid #d8dee5;border-radius:6px;background:#fff}.map{display:inline-block;margin-top:10px;padding:10px 14px;background:#eef3f8;border-radius:6px;color:#174c83;text-decoration:none;font-weight:bold}.room{page-break-inside:avoid} @page{size:A4;margin:15mm}@media print{body{padding:0}.roomgrid{grid-template-columns:minmax(0,1fr) 190px}.mini{max-height:130px}}${ceilingCountPrintCss}</style></head><body><h1>Завдання монтажникам</h1><p><b>Об'єкт:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p><p><b>Адреса:</b> ${esc(project.address || 'Не вказана')}</p>${mapUrl ? `<a class="map" href="${mapUrl}">Відкрити маршрут у Google Maps</a>` : ''}${warningsHtml}<section><h2>ЩО ВЗЯТИ НА ОБ’ЄКТ</h2><ul>${summaryHtml || '<li>Комплектуючі не вказані</li>'}</ul></section>${rows || ceilingCountHtml(0)}<p class="pdf-signature" style="margin-top:28px;color:#667">НСК — Натяжні Стелі Коломия</p>${ceilingCountPagination}</body></html>`
+    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Монтаж'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;padding:28px;max-width:900px;margin:auto}h1{font-size:26px;margin:0 0 14px}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:7px;margin-top:24px}p{margin:7px 0}ul{padding-left:22px}li{padding:5px 0;font-size:16px}.roomgrid{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:14px;align-items:start}.mini{width:100%;max-height:145px;border:1px solid #d8dee5;border-radius:6px;background:#fff}.map{display:inline-block;margin-top:10px;padding:10px 14px;background:#eef3f8;border-radius:6px;color:#174c83;text-decoration:none;font-weight:bold}.room{page-break-inside:avoid} @page{size:A4;margin:15mm}@media print{body{padding:0}.roomgrid{grid-template-columns:minmax(0,1fr) 190px}.mini{max-height:130px}}${ceilingCountPrintCss}</style></head><body><h1>Завдання монтажникам</h1><p><b>Об'єкт:</b> ${esc(projectObjectName(project))}</p><p><b>Замовник:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p><p><b>Адреса:</b> ${esc(project.address || 'Не вказана')}</p>${mapUrl ? `<a class="map" href="${mapUrl}">Відкрити маршрут у Google Maps</a>` : ''}${warningsHtml}<section><h2>ЩО ВЗЯТИ НА ОБ’ЄКТ</h2><ul>${summaryHtml || '<li>Комплектуючі не вказані</li>'}</ul></section>${rows || ceilingCountHtml(0)}<p class="pdf-signature" style="margin-top:28px;color:#667">НСК — Натяжні Стелі Коломия</p>${ceilingCountPagination}</body></html>`
     const win = window.open('', '_blank')
     if (!win) { alert('Дозволь спливаючі вікна, щоб сформувати PDF.'); return }
     win.document.open(); win.document.write(html); win.document.close()
@@ -1251,7 +1251,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.40</small>
+          <small>Версія 0.7.41</small>
         </div>
       </aside>
 
@@ -1261,7 +1261,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.40</small>
+            <small>v0.7.41</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
