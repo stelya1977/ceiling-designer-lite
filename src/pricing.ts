@@ -1,7 +1,8 @@
 export type Category = 'Полотна' | 'Профілі' | 'Карнизи' | 'Освітлення основне' | 'Інше'
 export type CatalogCategory = Category | 'LED-профілі'
 export type Unit = 'м' | 'шт.' | 'м²'
-export type CatalogItem = { id: string; category: CatalogCategory; name: string; price: string; unit: Unit; stockLength: string; cornerPrice: string; freeCorners: string; description: string; billStock?: boolean; ledPrice?: string; powerPrice?: string; grillePrice?: string }
+export type PurchasePrices = { purchasePrice?: string; cornerPurchasePrice?: string; ledPurchasePrice?: string; powerPurchasePrice?: string; grillePurchasePrice?: string }
+export type CatalogItem = PurchasePrices & { id: string; category: CatalogCategory; name: string; price: string; unit: Unit; stockLength: string; cornerPrice: string; freeCorners: string; description: string; billStock?: boolean; ledPrice?: string; powerPrice?: string; grillePrice?: string }
 export type Selection = { id: string; item: CatalogItem; quantity: string; corners: string; color: 'white'|'black'; ledEnabled: boolean; ledLength: string; ledColor: string; power: string; grilles: string }
 export type RoomPricing = { fabric: CatalogItem | null; standard: CatalogItem; insert: CatalogItem; insertColor: 'white'|'black'; insertOverride: string; standardCorners: string; items: Selection[] }
 export const categories: Category[] = ['Полотна', 'Профілі', 'Карнизи', 'Освітлення основне', 'Інше']
@@ -20,7 +21,11 @@ export function effectiveCatalog(raw: CatalogItem[]): CatalogItem[] {
   for (const v of baseItems) if (!list.some(x => x.id === v.id)) list.push({...v})
   return list
 }
-export function snapshot(item: CatalogItem): CatalogItem { return {...item,category:categoryOf(item)} }
+// Owner-only purchase prices stay in the catalog in this release, not sales snapshots.
+export function snapshot(item: CatalogItem): CatalogItem {
+  const { purchasePrice, cornerPurchasePrice, ledPurchasePrice, powerPurchasePrice, grillePurchasePrice, ...sales } = item
+  return {...sales,category:categoryOf(item)}
+}
 export function newPricing(catalog: CatalogItem[]): RoomPricing {
   const get = (id: string) => snapshot(catalog.find(v=>v.id===id) || baseItems.find(v=>v.id===id)!)
   return {fabric:get('fabric-msd'),standard:get('standard-profile'),insert:get('decorative-insert'),insertColor:'white',insertOverride:'',standardCorners:'4',items:[]}

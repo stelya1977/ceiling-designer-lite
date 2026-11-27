@@ -312,7 +312,7 @@ export default function App() {
   const [ownerPage,setOwnerPage]=useState<'staff'|'mounts'|'finance'|null>(null)
   const [catalogCategory, setCatalogCategory] = useState<CatalogCategory>('Профілі')
   const [editingCatalogId, setEditingCatalogId] = useState<string | null>(null)
-  const emptyCatalogDraft = { category: 'Профілі' as CatalogCategory, name: '', price: '', unit: 'м' as Unit, stockLength: '', cornerPrice: '0', freeCorners: '0', description: '', billStock: false, ledPrice: '', powerPrice: '', grillePrice: '' }
+  const emptyCatalogDraft = { category: 'Профілі' as CatalogCategory, name: '', price: '', purchasePrice: '', cornerPurchasePrice: '', ledPurchasePrice: '', powerPurchasePrice: '', grillePurchasePrice: '', unit: 'м' as Unit, stockLength: '', cornerPrice: '0', freeCorners: '0', description: '', billStock: false, ledPrice: '', powerPrice: '', grillePrice: '' }
   const [catalogDraft, setCatalogDraft] = useState(emptyCatalogDraft)
   const [query, setQuery] = useState('')
   const [projectView, setProjectView] = useState<'active'|'archive'|'calendar'>('active')
@@ -360,7 +360,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.42')
+        setUpdateAvailable(event.data.version !== '0.7.43')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -1252,7 +1252,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.42</small>
+          <small>Версія 0.7.43</small>
         </div>
       </aside>
 
@@ -1262,7 +1262,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.42</small>
+            <small>v0.7.43</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1288,7 +1288,7 @@ export default function App() {
 
         {ownerPage ? (cloud.session ? (ownerPage==='finance' ? <Finance key={cloud.session.user.id} owner={cloud.session.user.id} projects={projects.map(p=>({...p,...projectPayment(p)}))} syncStatus={cloud.status} onOpen={openFinanceProject} onDate={dateLegacyPayment}/> : ownerPage==='staff' ? <StaffManager key={cloud.session.user.id} owner={cloud.session.user.id} estimate={payrollEstimate} labels={[...availableCatalog.map(v=>v.name),'Блоки живлення','Магнітні решітки','Монтаж світильників']}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
           <section className="content narrow">
-            <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування позиціями та базовими цінами. Дані зберігаються локально та синхронізуються після входу.</p></div></div>
+            <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування цінами продажу та закупівлі. Закупівельні ціни не змінюють кошторис клієнта. Дані зберігаються локально та синхронізуються після входу.</p></div></div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
               {categories.map(cat => <button key={cat} style={{ ...buttonStyle, background: catalogCategory === cat ? '#ffb900' : '#405263', color: catalogCategory === cat ? '#18222c' : '#fff' }} onClick={() => { setCatalogCategory(cat); setEditingCatalogId(null); setCatalogDraft({ ...emptyCatalogDraft, category: cat, unit: cat==='Полотна'?'м²':'м' }) }}>{cat}</button>)}
             </div>
@@ -1296,7 +1296,7 @@ export default function App() {
               <h2>{editingCatalogId ? 'Редагувати позицію' : 'Додати позицію'}</h2>
               <label>Назва<input value={catalogDraft.name} onChange={e => setCatalogDraft(v => ({ ...v, name: e.target.value }))} placeholder="Назва виробу"/></label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <label>Ціна<NumericInput value={catalogDraft.price} onChange={value => setCatalogDraft(v => ({ ...v, price: value }))}/></label>
+                <label>Ціна для клієнта<NumericInput value={catalogDraft.price} onChange={value => setCatalogDraft(v => ({ ...v, price: value }))}/></label>
                 <label>Одиниця<select value={catalogDraft.unit} disabled={catalogCategory==='Полотна'||editingCatalogId==='standard-profile'||editingCatalogId==='decorative-insert'} onChange={e => setCatalogDraft(v => ({ ...v, unit: e.target.value as Unit }))}><option value="м">За метр</option><option value="шт.">За штуку</option><option value="м²">За м²</option></select></label>
               </div>
               <label>Довжина заводської планки / варіанти довжин<input value={catalogDraft.stockLength} onChange={e => setCatalogDraft(v => ({ ...v, stockLength: e.target.value }))} placeholder="Наприклад, 2 або 2; 2,5; 3,2"/></label>
@@ -1311,6 +1311,17 @@ export default function App() {
                 <label>Блок живлення, грн/шт. (порожньо — не передбачено)<NumericInput value={catalogDraft.powerPrice} onChange={value=>setCatalogDraft(v=>({...v,powerPrice:value}))}/></label>
                 <label>Магнітна решітка, грн/шт. (порожньо — не передбачено)<NumericInput value={catalogDraft.grillePrice} onChange={value=>setCatalogDraft(v=>({...v,grillePrice:value}))}/></label>
               </>}
+              <section style={{border:'1px solid #647586',borderRadius:10,padding:12,display:'grid',gap:10}}>
+                <h3 style={{margin:0}}>Закупівельні ціни · тільки для адміністратора</h3>
+                <p className="muted" style={{margin:0}}>Порожнє поле — ціна не задана. 0 — нульова закупівельна вартість. Вкажи фактичну закупівельну ціну за одиницю, а не націнку.</p>
+                <label>Основна позиція, грн/{catalogDraft.unit}<NumericInput value={catalogDraft.purchasePrice} onChange={value=>setCatalogDraft(v=>({...v,purchasePrice:value}))}/></label>
+                {(['Профілі','Карнизи','Освітлення основне'].includes(catalogCategory))&&<>
+                  <label>Кут (матеріал), грн/шт.<NumericInput value={catalogDraft.cornerPurchasePrice} onChange={value=>setCatalogDraft(v=>({...v,cornerPurchasePrice:value}))}/></label>
+                  <label>LED-стрічка, грн/м<NumericInput value={catalogDraft.ledPurchasePrice} onChange={value=>setCatalogDraft(v=>({...v,ledPurchasePrice:value}))}/></label>
+                  <label>Блок живлення, грн/шт.<NumericInput value={catalogDraft.powerPurchasePrice} onChange={value=>setCatalogDraft(v=>({...v,powerPurchasePrice:value}))}/></label>
+                  <label>Магнітна решітка, грн/шт.<NumericInput value={catalogDraft.grillePurchasePrice} onChange={value=>setCatalogDraft(v=>({...v,grillePurchasePrice:value}))}/></label>
+                </>}
+              </section>
               <label>Примітки та додаткові тарифи<textarea value={catalogDraft.description} onChange={e => setCatalogDraft(v => ({ ...v, description: e.target.value }))} rows={3}/></label>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button className="button" disabled={!catalogDraft.name.trim()||catalogDraft.price.trim()===''||Number(catalogDraft.price)<0} onClick={() => {
@@ -1325,8 +1336,8 @@ export default function App() {
             <div className="panel" style={{ marginTop: 16 }}>
               <h2>{catalogCategory}</h2>
               {availableCatalog.filter(item => categoryOf(item) === catalogCategory).map(item => <div key={item.id} className="info-row" style={{ alignItems: 'flex-start', gap: 12 }}>
-                <div style={{ flex: 1 }}><b>{item.name}</b><div className="muted">{item.price} ₴/{item.unit} {item.stockLength ? `· Планки: ${item.stockLength} м` : ''}{Number(item.cornerPrice || 0) > 0 ? ` · Кут: ${item.cornerPrice} ₴` : ''}{Number(item.freeCorners || 0) > 0 ? ` · Безкоштовно: ${item.freeCorners}` : ''}</div>{item.billStock&&<div className="muted">Ціна за закуплену довжину</div>}{item.ledPrice&&<div className="muted">LED: {item.ledPrice} ₴/м</div>}{item.powerPrice&&<div className="muted">БЖ: {item.powerPrice} ₴/шт.</div>}{item.grillePrice&&<div className="muted">Решітка: {item.grillePrice} ₴/шт.</div>}{item.description && <small className="muted">Примітка: {item.description}</small>}</div>
-                <button className="button secondary" onClick={() => { setEditingCatalogId(item.id); setCatalogDraft({ ...emptyCatalogDraft, ...item, cornerPrice: item.cornerPrice ?? '0', freeCorners: item.freeCorners ?? '0', billStock:item.billStock??false,ledPrice:item.ledPrice??'',powerPrice:item.powerPrice??'',grillePrice:item.grillePrice??'' }) }}>Редагувати</button>
+                <div style={{ flex: 1 }}><b>{item.name}</b><div className="muted">Продаж: {item.price} ₴/{item.unit} {item.stockLength ? `· Планки: ${item.stockLength} м` : ''}{Number(item.cornerPrice || 0) > 0 ? ` · Кут: ${item.cornerPrice} ₴` : ''}{Number(item.freeCorners || 0) > 0 ? ` · Безкоштовно: ${item.freeCorners}` : ''}</div>{item.billStock&&<div className="muted">Ціна за закуплену довжину</div>}{item.ledPrice&&<div className="muted">LED: {item.ledPrice} ₴/м</div>}{item.powerPrice&&<div className="muted">БЖ: {item.powerPrice} ₴/шт.</div>}{item.grillePrice&&<div className="muted">Решітка: {item.grillePrice} ₴/шт.</div>}<div style={{color:'#ffd87a',marginTop:5}}>Закупівля: {item.purchasePrice==null||item.purchasePrice===''?'не задано':`${item.purchasePrice} ₴/${item.unit}`}</div>{([['Кут',item.cornerPurchasePrice,'шт.'],['LED',item.ledPurchasePrice,'м'],['БЖ',item.powerPurchasePrice,'шт.'],['Решітка',item.grillePurchasePrice,'шт.']] as const).filter(([,value])=>value!=null&&value!=='').map(([label,value,unit])=><div key={label} className="muted">Закупівля · {label}: {value} ₴/{unit}</div>)}{item.description && <small className="muted">Примітка: {item.description}</small>}</div>
+                <button className="button secondary" onClick={() => { setEditingCatalogId(item.id); setCatalogDraft({ ...emptyCatalogDraft, ...item, cornerPrice: item.cornerPrice ?? '0', freeCorners: item.freeCorners ?? '0', billStock:item.billStock??false,ledPrice:item.ledPrice??'',powerPrice:item.powerPrice??'',grillePrice:item.grillePrice??'',purchasePrice:item.purchasePrice??'',cornerPurchasePrice:item.cornerPurchasePrice??'',ledPurchasePrice:item.ledPurchasePrice??'',powerPurchasePrice:item.powerPurchasePrice??'',grillePurchasePrice:item.grillePurchasePrice??'' }) }}>Редагувати</button>
                 <button className="icon-button" aria-label="Видалити" disabled={['fabric-msd','standard-profile','decorative-insert'].includes(item.id)} onClick={() => { if (confirm(`Видалити «${item.name}» з каталогу?`)) setCatalog(items => effectiveCatalog(items).filter(v => v.id !== item.id)) }}><Trash2 size={16}/></button>
               </div>)}
               {availableCatalog.filter(item => categoryOf(item) === catalogCategory).length === 0 && <p className="muted">У цій категорії поки немає позицій.</p>}
