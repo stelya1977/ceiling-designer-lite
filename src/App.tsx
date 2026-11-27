@@ -1,3 +1,4 @@
+import {transportTotal} from './transport'
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useCloud, supabase } from './cloud'
 import JobPhotos,{hasJobPhotos} from './JobPhotos'
@@ -376,7 +377,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.54')
+        setUpdateAvailable(event.data.version !== '0.7.55')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -524,6 +525,7 @@ export default function App() {
 
   async function deleteProject(id: string) {
     const warehouse=warehouseFromCatalog(catalog);if(movements(warehouse).some(m=>m.projectId===id)||reservations(warehouse).some(r=>r.projectId===id)){alert('Є складські операції цього об’єкта. Збережи його в архіві, щоб не втратити історію.');return}
+    if(projects.find(p=>p.id===id)?.objectCosts?.transport){alert('Є транспортні витрати. Збережи об’єкт в архіві для фінансової історії.');return}
     if(projects.find(p=>p.id===id)?.workerReceiptId){alert('Об’єкт має зареєстровану оплату монтажника. Його не можна видалити з історії.');return}
     if (!confirm('Видалити цей об’єкт разом з усіма кімнатами та розрахунками? Завдання монтажників також буде відкликано.')) return
     if (!cloud.session || !networkOnline) { alert('Для видалення об’єкта потрібен інтернет: спочатку треба відкликати завдання монтажників.'); return }
@@ -1309,7 +1311,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.54</small>
+          <small>Версія 0.7.55</small>
         </div>
       </aside>
 
@@ -1320,7 +1322,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.54</small>
+            <small>v0.7.55</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1344,7 +1346,7 @@ export default function App() {
           </div>
         </div>}
 
-        {ownerPage ? (cloud.session ? (ownerPage==='warehouse' ? <Warehouse key={warehouseTarget.nonce} initialTab={warehouseTarget.tab} initialProject={warehouseTarget.project} catalog={availableCatalog} rules={consumableRules} data={warehouseData} projects={demandProjects} onSave={saveWarehouse} onUpdate={updateWarehouse} onToggle={row=>saveWarehouse({...row,excluded:!row.excluded},row.quantity)} onOpen={id=>{const p=projects.find(p=>p.id===id);if(p){setOwnerPage(null);setProjectView('active');setActiveRoomId(null);setActive(p)}}} canEdit={!cloud.conflict&&(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація'))} syncStatus={cloud.status}/> : ownerPage==='finance' ? <Finance key={cloud.session.user.id} owner={cloud.session.user.id} projects={projects.map(p=>({...p,...projectPayment(p)}))} costs={Object.fromEntries(projects.map(p=>{const {needs,warnings}=projectCostNeeds(p);return [p.id,projectBusinessCost(needs,warnings,p.objectCosts||{},availableCatalog,consumableRules,warehouseData,p.id)]}))} warehouse={warehouseData} onWarehouseUpdate={updateWarehouse} canEdit={!cloud.conflict&&(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація'))} syncStatus={cloud.status} onOpen={openFinanceProject} onDate={dateLegacyPayment}/> : ownerPage==='staff' ? <StaffManager key={cloud.session.user.id} owner={cloud.session.user.id} estimate={payrollEstimate} labels={[...availableCatalog.map(v=>v.name),'Блоки живлення','Магнітні решітки','Монтаж світильників']}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
+        {ownerPage ? (cloud.session ? (ownerPage==='warehouse' ? <Warehouse key={warehouseTarget.nonce} initialTab={warehouseTarget.tab} initialProject={warehouseTarget.project} catalog={availableCatalog} rules={consumableRules} data={warehouseData} projects={demandProjects} onSave={saveWarehouse} onUpdate={updateWarehouse} onToggle={row=>saveWarehouse({...row,excluded:!row.excluded},row.quantity)} onOpen={id=>{const p=projects.find(p=>p.id===id);if(p){setOwnerPage(null);setProjectView('active');setActiveRoomId(null);setActive(p)}}} canEdit={!cloud.conflict&&(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація'))} syncStatus={cloud.status}/> : ownerPage==='finance' ? <Finance key={cloud.session.user.id} owner={cloud.session.user.id} projects={projects.map(p=>({...p,...projectPayment(p)}))} costs={Object.fromEntries(projects.map(p=>{const {needs,warnings}=projectCostNeeds(p);return [p.id,projectBusinessCost(needs,warnings,p.objectCosts||{},availableCatalog,consumableRules,warehouseData,p.id)]}))} refusedTransport={projects.filter(p=>p.status==='Відмовлено'&&!p.completedAt&&p.rooms.length>0).map(p=>({id:p.id,client:p.client,day:projectDate(p),cost:transportTotal(p.objectCosts?.transport)?.cents??null}))} warehouse={warehouseData} onWarehouseUpdate={updateWarehouse} canEdit={!cloud.conflict&&(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація'))} syncStatus={cloud.status} onOpen={openFinanceProject} onDate={dateLegacyPayment}/> : ownerPage==='staff' ? <StaffManager key={cloud.session.user.id} owner={cloud.session.user.id} estimate={payrollEstimate} labels={[...availableCatalog.map(v=>v.name),'Блоки живлення','Магнітні решітки','Монтаж світильників']}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
           <section className="content narrow">
             <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування цінами продажу та закупівлі. Закупівельні ціни не змінюють кошторис клієнта. Дані зберігаються локально та синхронізуються після входу.</p></div></div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
@@ -1893,7 +1895,7 @@ export default function App() {
               <h2>Оплата виконаного об’єкта</h2>
               {(()=>{const info=projectPayment(active);return <><div className="info-row"><span>Статус оплати</span><b style={{color:info.paid?'#60c692':'#ffc247'}}>{info.paid?'Оплачено':'Не оплачено'}</b></div><div className="info-row"><span>Вартість замовлення</span><b>{money(info.total)}</b></div><div className="info-row"><span>Завдаток</span><b>{money(info.deposit)}</b></div>{info.final>0&&<div className="info-row"><span>Остаточна оплата</span><b>{money(info.final)}</b></div>}<div className="info-row"><span>Залишок до оплати</span><b>{money(info.balance)}</b></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button className="button primary" disabled={info.paid||info.total<=0} onClick={()=>markPayment(active,true)}>Оплачено</button><button className="button secondary" disabled={!info.final||!!active.workerReceiptId} onClick={()=>markPayment(active,false)}>Скасувати остаточну оплату</button></div>{info.total<=0&&<p className="muted">Спочатку сформуй кошторис.</p>}</>})()}
             </div>}
-            {financeProjectId===active.id&&(()=>{const info=projectPayment(active),costs=projectCostNeeds(active);return <ObjectFinance key={active.id} actual={actualMaterialCost(warehouseFromCatalog(catalog),active.id)} {...costs} rules={consumableRules} catalog={availableCatalog} revenue={info.total} received={info.deposit+info.final} balance={info.balance} value={active.objectCosts||{}} onChange={objectCosts=>syncProject({...active,objectCosts})}/>})()}
+            {financeProjectId===active.id&&(()=>{const info=projectPayment(active),costs=projectCostNeeds(active);return <ObjectFinance key={active.id} transportBase={warehouseData.transport} lat={active.locationLat} lng={active.locationLng} actual={actualMaterialCost(warehouseFromCatalog(catalog),active.id)} {...costs} rules={consumableRules} catalog={availableCatalog} revenue={info.total} received={info.deposit+info.final} balance={info.balance} value={active.objectCosts||{}} onChange={objectCosts=>syncProject({...active,objectCosts})}/>})()}
             <div className="detail-grid">
               <div className="panel">
                 <h2>Інформація про об’єкт</h2>
