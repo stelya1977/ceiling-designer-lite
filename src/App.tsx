@@ -9,12 +9,19 @@ import type {PayrollEstimate} from './payrollMath'
 import { consolidateMaterials, type InstallerMaterial } from './installerMaterials'
 import RoomComponents from './RoomComponents'
 import NumericInput from './NumericInput'
+import { metresToCm, cmToMetres, formatCm } from './measurementUnits'
+
 import { activeStatuses, localDate, projectDate, payment, archive, restore, matchesDate, calendarDays, shiftMonth, type Workflow } from './projectWorkflow'
 import { categories, categoryOf, effectiveCatalog, newPricing, newSelection, calculate, snapshot, stockPlan, num, type DetailedPriceRow, type CatalogCategory, type CatalogItem, type RoomPricing, type Unit } from './pricing'
 import {
   Plus, Search, ChevronRight, House, ClipboardList, Layers3, Settings,
   X, ArrowLeft, Trash2, Ruler, RotateCcw, MapPin, Navigation, ImagePlus, Pencil, Sparkles, Download, Archive, CalendarDays
 } from 'lucide-react'
+
+// Keep NumericInput's decimal draft behavior while storing geometry in metres.
+function CmInput({value,onChange,placeholder,style}: {value:string|number|undefined;onChange:(value:string)=>void;placeholder?:string;style?:CSSProperties}) {
+  return <NumericInput value={metresToCm(value)} onChange={v=>onChange(cmToMetres(v))} placeholder={placeholder} style={style}/>
+}
 
 type Side = { id: string; label: string; length: string }
 type Point = { x: number; y: number }
@@ -278,7 +285,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.35')
+        setUpdateAvailable(event.data.version !== '0.7.36')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -797,10 +804,7 @@ export default function App() {
     const project = active || estimateProject
     if (!project) return
     const esc = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-    const fmt = (value: unknown) => {
-      const n = Number(value)
-      return Number.isFinite(n) && n > 0 ? `${n.toLocaleString('uk-UA', { maximumFractionDigits: 3 })} м` : '—'
-    }
+    const fmt = formatCm
     const roomPages = project.rooms.map((room, index) => {
       let drawing = ''
       let orderedSides: Side[] = []
@@ -833,10 +837,7 @@ export default function App() {
   function buildWorkerTask(project: Project) {
     const jobRooms: JobPayload['rooms'] = []
     const esc = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-    const qty = (value: unknown, unit = 'м') => {
-      const n = Number(value || 0)
-      return n > 0 ? `${n.toLocaleString('uk-UA', { maximumFractionDigits: 2 })} ${unit}` : '—'
-    }
+    const qty = formatCm
     const allMaterials: InstallerMaterial[] = []
     const warnings: string[] = []
     const rows = project.rooms.map((room, index) => {
@@ -1005,15 +1006,15 @@ export default function App() {
       </label>
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))',gap:12}}>
         {extras.map(k=><div key={room.id+k}>
-          <label style={labelStyle}>{k.replace('-','–')}, м<NumericInput key={room.id+k} value={values[k]} style={inputStyle} onChange={v=>updateDiagonal(room,k,v)} placeholder="0,000"/></label>
+          <label style={labelStyle}>{k.replace('-','–')}, см<CmInput key={room.id+k} value={values[k]} style={inputStyle} onChange={v=>updateDiagonal(room,k,v)} placeholder="0"/></label>
           <button className="button secondary" type="button" onClick={()=>{const next={...values};delete next[k];updateRoom(room.id,{diagonals:next})}}>Видалити {k}</button>
         </div>)}
       </div>
       <h3 style={{marginTop:20}}>Габаритні розміри</h3>
       <p className="muted">Фактичні максимальні габарити стелі. Для складної форми можуть використовуватися для кошторису.</p>
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))',gap:12}}>
-        <label style={labelStyle}>Габаритна ширина, м<NumericInput key={room.id+'overallWidth'} style={inputStyle} value={room.overallWidth} onChange={v=>updateRoom(room.id,{overallWidth:v})} placeholder="0,000"/></label>
-        <label style={labelStyle}>Габаритна висота, м<NumericInput key={room.id+'overallHeight'} style={inputStyle} value={room.overallHeight} onChange={v=>updateRoom(room.id,{overallHeight:v})} placeholder="0,000"/></label>
+        <label style={labelStyle}>Габаритна ширина, см<CmInput key={room.id+'overallWidth'} style={inputStyle} value={room.overallWidth} onChange={v=>updateRoom(room.id,{overallWidth:v})} placeholder="0"/></label>
+        <label style={labelStyle}>Габаритна висота, см<CmInput key={room.id+'overallHeight'} style={inputStyle} value={room.overallHeight} onChange={v=>updateRoom(room.id,{overallHeight:v})} placeholder="0"/></label>
       </div>
     </div>
   }
@@ -1135,7 +1136,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.35</small>
+          <small>Версія 0.7.36</small>
         </div>
       </aside>
 
@@ -1145,7 +1146,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.35</small>
+            <small>v0.7.36</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1526,17 +1527,17 @@ export default function App() {
             {activeRoom.shape === 'rectangle' ? (
               <div style={panelStyle}>
                 <h2 style={{ marginTop: 0 }}>Розміри приміщення</h2>
-                <label style={labelStyle}>Довжина, м
-                  <NumericInput key={activeRoom.id + '-length'} style={inputStyle}
+                <label style={labelStyle}>Довжина, см
+                  <CmInput key={activeRoom.id + '-length'} style={inputStyle}
                     value={activeRoom.length}
                     onChange={value => updateRoom(activeRoom.id, { length: value === '' ? undefined : Number(value) })}
-                    placeholder="Наприклад, 5,20"/>
+                    placeholder="Наприклад, 520"/>
                 </label>
-                <label style={labelStyle}>Ширина, м
-                  <NumericInput key={activeRoom.id + '-width'} style={inputStyle}
+                <label style={labelStyle}>Ширина, см
+                  <CmInput key={activeRoom.id + '-width'} style={inputStyle}
                     value={activeRoom.width}
                     onChange={value => updateRoom(activeRoom.id, { width: value === '' ? undefined : Number(value) })}
-                    placeholder="Наприклад, 3,60"/>
+                    placeholder="Наприклад, 360"/>
                 </label>
                 <div className="room-area">
                   <span>Площа</span>
@@ -1547,11 +1548,11 @@ export default function App() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(135px,1fr))', gap: 12 }}>
                   {diagonalKeys(activeRoom.sides.length).map(diagonal => (
                     <label key={diagonal.key} style={labelStyle}>
-                      {diagonal.label}, м
-                      <NumericInput key={activeRoom.id + diagonal.key} style={inputStyle}
+                      {diagonal.label}, см
+                      <CmInput key={activeRoom.id + diagonal.key} style={inputStyle}
                         value={(activeRoom.diagonals || {})[diagonal.key] || ''}
                         onChange={value => updateDiagonal(activeRoom, diagonal.key, value)}
-                        placeholder="0,00"/>
+                        placeholder="0"/>
                     </label>
                   ))}
                 </div>
@@ -1641,9 +1642,9 @@ export default function App() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(135px,1fr))', gap: 12 }}>
                   {activeRoom.sides.map(side => (
                     <label key={side.id} style={labelStyle}>
-                      {side.label}, м
-                      <NumericInput key={activeRoom.id + side.id} style={inputStyle} value={side.length}
-                        onChange={value => updateSide(activeRoom, side.id, value)} placeholder="0,00"/>
+                      {side.label}, см
+                      <CmInput key={activeRoom.id + side.id} style={inputStyle} value={side.length}
+                        onChange={value => updateSide(activeRoom, side.id, value)} placeholder="0"/>
                     </label>
                   ))}
                 </div>
@@ -1652,11 +1653,11 @@ export default function App() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(135px,1fr))', gap: 12 }}>
                   {diagonalKeys(activeRoom.sides.length).map(diagonal => (
                     <label key={diagonal.key} style={labelStyle}>
-                      {diagonal.label}, м
-                      <NumericInput key={activeRoom.id + diagonal.key} style={inputStyle}
+                      {diagonal.label}, см
+                      <CmInput key={activeRoom.id + diagonal.key} style={inputStyle}
                         value={(activeRoom.diagonals || {})[diagonal.key] || ''}
                         onChange={value => updateDiagonal(activeRoom, diagonal.key, value)}
-                        placeholder="0,00"/>
+                        placeholder="0"/>
                     </label>
                   ))}
                 </div>
