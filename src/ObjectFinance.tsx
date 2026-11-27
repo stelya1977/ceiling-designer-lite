@@ -1,3 +1,5 @@
+import Transport from './Transport'
+import {transportTotal,type TransportSettings} from './transport'
 import type {Consumable,ConsumableNeed} from './consumables'
 import NumericInput from './NumericInput'
 import {costLines,costSignature,normalizeCostSignature,summarizeCosts,type CostNeed,type ObjectCosts} from './objectCost'
@@ -5,7 +7,7 @@ import type {CatalogItem} from './pricing'
 import type {actualMaterialCost} from './stockMovement'
 const money=(n:number)=>n.toLocaleString('uk-UA',{minimumFractionDigits:2,maximumFractionDigits:2})+' грн'
 const qty=(n:number)=>n.toLocaleString('uk-UA',{maximumFractionDigits:3})
-export default function ObjectFinance({needs,warnings,catalog,rules,adjustments,revenue,received,balance,value,onChange,actual}:{actual:ReturnType<typeof actualMaterialCost>;needs:CostNeed[];warnings:string[];catalog:CatalogItem[];rules:Consumable[];adjustments:{room:string;item:ConsumableNeed}[];revenue:number;received:number;balance:number;value:ObjectCosts;onChange:(v:ObjectCosts)=>void}){
+export default function ObjectFinance({needs,warnings,catalog,rules,adjustments,revenue,received,balance,value,onChange,actual,transportBase,lat,lng}:{transportBase?:TransportSettings;lat?:number|null;lng?:number|null;actual:ReturnType<typeof actualMaterialCost>;needs:CostNeed[];warnings:string[];catalog:CatalogItem[];rules:Consumable[];adjustments:{room:string;item:ConsumableNeed}[];revenue:number;received:number;balance:number;value:ObjectCosts;onChange:(v:ObjectCosts)=>void}){
  const signature=costSignature(needs),snapshot=value.snapshot,stale=!!snapshot&&normalizeCostSignature(snapshot.signature)!==normalizeCostSignature(signature)
  const current=costLines(needs,catalog,rules),lines=snapshot?snapshot.lines:current
  const summary=summarizeCosts(lines,revenue,value.wages,value.extra,!stale&&!warnings.length)
@@ -28,7 +30,9 @@ export default function ObjectFinance({needs,warnings,catalog,rules,adjustments,
  <label style={{display:'grid',gap:6,margin:'12px 0'}}>Зарплата по об’єкту, грн (вручну)<NumericInput value={value.wages} onChange={wages=>onChange({...value,wages})} placeholder="Не задано" commitOnBlur/></label>
  <label style={{display:'grid',gap:6,margin:'12px 0'}}>Додаткові витрати, грн (вручну)<NumericInput value={value.extra} onChange={extra=>onChange({...value,extra})} placeholder="Не задано" commitOnBlur/></label>
  <p className="muted">Зарплату і витрати введи фактичними сумами або 0. Цей запис не нараховує зарплату повторно і не змінює касу. Податки та інші витрати враховуються тільки якщо внесені.</p>
- {line('Розрахунковий прибуток',summary.profit===null?'Не визначено':money(summary.profit))}
+ <Transport value={value.transport} base={transportBase} lat={lat} lng={lng} onSave={transport=>onChange({...value,transport})}/>
+ {line('Збережені витрати на пальне',transportTotal(value.transport)===null?'Не визначено':money(transportTotal(value.transport)!.cents/100))}
+ {line('Розрахунковий прибуток',summary.profit===null||transportTotal(value.transport)===null?'Не визначено':money(summary.profit-transportTotal(value.transport)!.cents/100))}
  <div style={{marginTop:16,borderTop:'1px solid #425365',paddingTop:12}}><h3>Фактичні видачі зі складу</h3>{actual.count===0?<p className="muted">Видачі ще не зареєстровано.</p>:<>{line(actual.missing?'Відома сума видач':'Видано мінус повернуто',money(actual.known))}<details><summary>Матеріали за операціями</summary>{actual.issues.map(m=><div className="info-row" key={m.id}><span>{m.label} · {qty(m.quantity)} {m.unit}</span><b>{m.price===null?'Без ціни':money(m.price*m.quantity)}</b></div>)}</details></>}<p className="muted">Це облік фактичних видач за зафіксованою ціною операції, не повна собівартість монтажу. Плановий прибуток вище не замінюється автоматично.</p></div>
  </div>
 }

@@ -1,9 +1,10 @@
+import type {TransportRecord} from './transport'
 import {type Consumable,type ConsumableNeed,type Quantities} from './consumables'
 import {categoryOf,num,stockPlan,type CatalogItem,type PurchasePrices,type RoomPricing} from './pricing'
 export type CostNeed={roomId:string;room:string;itemId:string;label:string;quantity:number;unit:string;priceUnit:string;field:keyof PurchasePrices;consumable?:boolean}
 export type CostLine=CostNeed&{unitPrice:number|null;amount:number|null}
 export type CostSnapshot={at:string;signature:string;lines:CostLine[]}
-export type ObjectCosts={snapshot?:CostSnapshot;wages?:string;extra?:string;consumableQuantities?:Quantities}
+export type ObjectCosts={snapshot?:CostSnapshot;wages?:string;extra?:string;consumableQuantities?:Quantities;transport?:TransportRecord}
 export function priceValue(v:unknown):number|null {
  if(v==null||String(v).trim()==='')return null
  const n=Number(String(v).replace(',','.'));return Number.isFinite(n)&&n>=0?n:null

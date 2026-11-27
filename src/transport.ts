@@ -1,0 +1,10 @@
+export type TransportSettings={lat:string;lng:string;rate:string;price:string}
+export type TransportRecord={km:string;rate:string;price:string;measure:string;mount:string;other:string;routeKey?:string}
+export type RefusedTransport={id:string;client:string;day:string;cost:number|null}
+export const emptyTransport:TransportSettings={lat:'',lng:'',rate:'',price:''}
+export function numeric(v:unknown):number|null{if(v==null||String(v).trim()==='')return null;const n=Number(String(v).replace(',','.'));return Number.isFinite(n)&&n>=0?n:null}
+export function coords(lat:unknown,lng:unknown):[number,number]|null{if(lat==null||lng==null||String(lat).trim()===''||String(lng).trim()==='')return null;const a=Number(String(lat).replace(',','.')),b=Number(String(lng).replace(',','.'));return Number.isFinite(a)&&Number.isFinite(b)&&Math.abs(a)<=90&&Math.abs(b)<=180?[a,b]:null}
+export function transportTotal(r?:TransportRecord){if(!r)return null;const counts=[r.measure,r.mount,r.other].map(numeric);if(counts.some(n=>n===null||!Number.isSafeInteger(n)))return null;const trips=counts.reduce<number>((s,n)=>s+(n??0),0);if(!trips)return {trips,km:0,litres:0,cents:0};const km=numeric(r.km),rate=numeric(r.rate),price=numeric(r.price);if(km===null||rate===null||price===null||rate<=0||price<=0)return null;const distance=km*trips,litres=distance*rate/100,cents=Math.round(litres*price*100);return Number.isSafeInteger(cents)?{trips,km:distance,litres,cents}:null}
+export function routeKey(base:TransportSettings,lat:unknown,lng:unknown){const a=coords(base.lat,base.lng),b=coords(lat,lng);return a&&b?JSON.stringify([a,b]):''}
+export function mapsRoute(base:TransportSettings,lat:unknown,lng:unknown){const a=coords(base.lat,base.lng),b=coords(lat,lng);return a&&b?'https://www.google.com/maps/dir/?api=1&origin='+encodeURIComponent(a.join(','))+'&destination='+encodeURIComponent(b.join(','))+'&travelmode=driving':null}
+export function refusedSummary(rows:RefusedTransport[],from:string,to:string){const selected=rows.filter(r=>r.day>=from&&r.day<=to);return {rows:selected,total:selected.reduce((n,r)=>n+(r.cost??0),0),missing:selected.filter(r=>r.cost===null).length}}
