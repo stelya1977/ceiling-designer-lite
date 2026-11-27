@@ -6,8 +6,9 @@ import { StaffManager, JobAssignment, type JobPayload } from './Staff'
 import OwnerCalendar from './OwnerCalendar'
 import Finance from './Finance'
 import Warehouse from './Warehouse'
-import {includesDemand,warehouseFromCatalog,setStock,type StockRow,type WarehouseData} from './warehouse'
+import {includesDemand,warehouseFromCatalog,type StockRow,type WarehouseData} from './warehouse'
 import ObjectFinance from './ObjectFinance'
+import {inventoryAdjustment,actualMaterialCost,movements,reservations} from './stockMovement'
 import {roomNeeds,consumableCostNeeds,type ObjectCosts,type CostNeed} from './objectCost'
 import Consumables from './Consumables'
 import {rulesFromCatalog,automaticNeeds,manualNeeds,LED_ID,type Consumable,type ConsumableNeed} from './consumables'
@@ -371,7 +372,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.48')
+        setUpdateAvailable(event.data.version !== '0.7.49')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -518,6 +519,7 @@ export default function App() {
   }
 
   async function deleteProject(id: string) {
+    const warehouse=warehouseFromCatalog(catalog);if(movements(warehouse).some(m=>m.projectId===id)||reservations(warehouse).some(r=>r.projectId===id)){alert('Є складські операції цього об’єкта. Збережи його в архіві, щоб не втратити історію.');return}
     if(projects.find(p=>p.id===id)?.workerReceiptId){alert('Об’єкт має зареєстровану оплату монтажника. Його не можна видалити з історії.');return}
     if (!confirm('Видалити цей об’єкт разом з усіма кімнатами та розрахунками? Завдання монтажників також буде відкликано.')) return
     if (!cloud.session || !networkOnline) { alert('Для видалення об’єкта потрібен інтернет: спочатку треба відкликати завдання монтажників.'); return }
@@ -692,7 +694,8 @@ export default function App() {
   function saveWarehouse(entry:StockRow|string,quantity:string,label?:string,unit?:Unit){
     if(cloud.conflict||!cloud.session||!(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація')))return
     const row=typeof entry==='string'?{key:'manual:'+makeId(),label:label||'',unit:unit||'шт.',quantity:'',manual:true}:entry
-    setCatalog(items=>effectiveCatalog(items).map(item=>item.id==='standard-profile'?{...item,warehouse:setStock(warehouseFromCatalog(items),row,quantity)}:item))
+    const operationId=makeId(),at=new Date().toISOString()
+    setCatalog(items=>effectiveCatalog(items).map(item=>item.id==='standard-profile'?{...item,warehouse:inventoryAdjustment(warehouseFromCatalog(items),row,quantity,operationId,at)}:item))
   }
   function updateWarehouse(update:(data:WarehouseData)=>WarehouseData){
     if(cloud.conflict||!cloud.session||!(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація')))return
@@ -1297,7 +1300,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.48</small>
+          <small>Версія 0.7.49</small>
         </div>
       </aside>
 
@@ -1307,7 +1310,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.48</small>
+            <small>v0.7.49</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1880,7 +1883,7 @@ export default function App() {
               <h2>Оплата виконаного об’єкта</h2>
               {(()=>{const info=projectPayment(active);return <><div className="info-row"><span>Статус оплати</span><b style={{color:info.paid?'#60c692':'#ffc247'}}>{info.paid?'Оплачено':'Не оплачено'}</b></div><div className="info-row"><span>Вартість замовлення</span><b>{money(info.total)}</b></div><div className="info-row"><span>Завдаток</span><b>{money(info.deposit)}</b></div>{info.final>0&&<div className="info-row"><span>Остаточна оплата</span><b>{money(info.final)}</b></div>}<div className="info-row"><span>Залишок до оплати</span><b>{money(info.balance)}</b></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button className="button primary" disabled={info.paid||info.total<=0} onClick={()=>markPayment(active,true)}>Оплачено</button><button className="button secondary" disabled={!info.final||!!active.workerReceiptId} onClick={()=>markPayment(active,false)}>Скасувати остаточну оплату</button></div>{info.total<=0&&<p className="muted">Спочатку сформуй кошторис.</p>}</>})()}
             </div>}
-            {financeProjectId===active.id&&(()=>{const info=projectPayment(active),costs=projectCostNeeds(active);return <ObjectFinance key={active.id} {...costs} rules={consumableRules} catalog={availableCatalog} revenue={info.total} received={info.deposit+info.final} balance={info.balance} value={active.objectCosts||{}} onChange={objectCosts=>syncProject({...active,objectCosts})}/>})()}
+            {financeProjectId===active.id&&(()=>{const info=projectPayment(active),costs=projectCostNeeds(active);return <ObjectFinance key={active.id} actual={actualMaterialCost(warehouseFromCatalog(catalog),active.id)} {...costs} rules={consumableRules} catalog={availableCatalog} revenue={info.total} received={info.deposit+info.final} balance={info.balance} value={active.objectCosts||{}} onChange={objectCosts=>syncProject({...active,objectCosts})}/>})()}
             <div className="detail-grid">
               <div className="panel">
                 <h2>Інформація про об’єкт</h2>
