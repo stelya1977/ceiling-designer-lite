@@ -2,13 +2,14 @@ import type {CostNeed} from './objectCost'
 import {priceValue} from './objectCost'
 import type {CatalogItem} from './pricing'
 import type {Consumable} from './consumables'
+import {incomingQuantity,supplyOrders,type SupplyOrder} from './incoming'
 import type {Supplier,Offer} from './procurement'
 import {reserved,netIssued,type Reservation,type Movement} from './stockMovement'
 
 export type StockEntry={key:string;label:string;unit:string;quantity:string;itemId?:string;field?:CostNeed['field'];consumable?:boolean;priceUnit?:string;manual?:boolean;excluded?:boolean}
-export type WarehouseData={entries:StockEntry[];suppliers?:Supplier[];offers?:Offer[];reservations?:Reservation[];movements?:Movement[]}
+export type WarehouseData={entries:StockEntry[];suppliers?:Supplier[];offers?:Offer[];reservations?:Reservation[];movements?:Movement[];orders?:SupplyOrder[]}
 export type DemandProject={id:string;label:string;status:string;needs:CostNeed[];warnings:string[]}
-export type StockRow=StockEntry&{needed:number;totalNeeded:number;onHand:number|null;shortage:number|null;totalShortage:number|null;unitPrice:number|null;reserved:number;ownReserved:number;free:number|null;planned:number;issued:number}
+export type StockRow=StockEntry&{needed:number;totalNeeded:number;onHand:number|null;shortage:number|null;totalShortage:number|null;unitPrice:number|null;reserved:number;ownReserved:number;free:number|null;planned:number;issued:number;incoming:number;physicalShortage:number|null;totalPhysicalShortage:number|null}
 const round=(n:number)=>Math.round(n*1e6)/1e6
 const variant=(n:CostNeed)=>n.consumable?'':(n.itemId==='decorative-insert'||n.itemId==='alutat-sk30'||/\((?:білий|чорний|біла|чорна)\)$/u.test(n.label))?(n.label.match(/\((білий|чорний|біла|чорна)\)$/u)?.[1]?.startsWith('біл')?'white':n.label.match(/\((чорний|чорна)\)$/u)?'black':'') : ''
 export function stockKey(n:CostNeed){return JSON.stringify([n.consumable?'consumable':'catalog',n.itemId,n.field,n.unit,variant(n)])}
@@ -33,13 +34,15 @@ export function stockRows(catalog:CatalogItem[],rules:Consumable[],data:Warehous
  function register(n:CostNeed){const key=stockKey(n),old=rows.get(key);rows.set(key,{key,label:n.label,unit:n.unit,quantity:old?.quantity??'',excluded:old?.excluded,itemId:n.itemId,field:n.field,priceUnit:n.priceUnit,consumable:n.consumable});return key}
  for(const n of catalogNeeds(catalog,rules))register(n)
  for(const p of projects){const pNeeds=new Map<string,number>();for(const n of p.needs){if(!Number.isFinite(n.quantity)||n.quantity<=0)continue;const key=register(n);pNeeds.set(key,(pNeeds.get(key)||0)+n.quantity)}perProject.set(p.id,pNeeds)}
+ for(const o of supplyOrders(data))if(!rows.has(o.key)&&incomingQuantity(data,o.key)>0)rows.set(o.key,{key:o.key,label:o.label,unit:o.unit,quantity:""})
  for(const p of projects)for(const [key,q] of perProject.get(p.id)||[]){const out=netIssued(data,key,p.id),remaining=round(Math.max(0,q-out)),cover=Math.min(remaining,reserved(data,key,p.id));total.set(key,(total.get(key)||0)+remaining);covered.set(key,(covered.get(key)||0)+cover);if(selected==='all'||selected===p.id){need.set(key,(need.get(key)||0)+remaining);planned.set(key,(planned.get(key)||0)+q);issued.set(key,(issued.get(key)||0)+out);ownCovered.set(key,(ownCovered.get(key)||0)+cover)}}
  return [...rows.values()].map(s=>{
   const needed=round(need.get(s.key)||0),totalNeeded=round(total.get(s.key)||0),onHand=priceValue(s.quantity)
   const item=catalog.find(v=>v.id===s.itemId),rule=rules.find(v=>v.id===s.itemId&&v.unit===s.unit)
   const unitPrice=s.consumable?priceValue(rule?.price):item&&s.field&&item.unit===s.priceUnit?priceValue(item[s.field]):null
   const held=reserved(data,s.key),own=selected==='all'?held:reserved(data,s.key,selected),free=onHand===null?null:round(Math.max(0,onHand-held))
-  return {...s,needed,totalNeeded,onHand,reserved:held,ownReserved:own,free,planned:round(planned.get(s.key)||0),issued:round(issued.get(s.key)||0),shortage:needed===0?0:free===null?null:round(Math.max(0,needed-(ownCovered.get(s.key)||0)-free)),totalShortage:totalNeeded===0?0:free===null?null:round(Math.max(0,totalNeeded-(covered.get(s.key)||0)-free)),unitPrice}
+  const incoming=incomingQuantity(data,s.key),physicalShortage=needed===0?0:free===null?null:round(Math.max(0,needed-(ownCovered.get(s.key)||0)-free)),totalPhysicalShortage=totalNeeded===0?0:free===null?null:round(Math.max(0,totalNeeded-(covered.get(s.key)||0)-free))
+  return {...s,incoming,physicalShortage,totalPhysicalShortage,needed,totalNeeded,onHand,reserved:held,ownReserved:own,free,planned:round(planned.get(s.key)||0),issued:round(issued.get(s.key)||0),shortage:physicalShortage===null?null:round(Math.max(0,physicalShortage-incoming)),totalShortage:totalPhysicalShortage===null?null:round(Math.max(0,totalPhysicalShortage-incoming)),unitPrice}
  }).sort((a,b)=>a.label.localeCompare(b.label,'uk')||a.unit.localeCompare(b.unit))
 }
 export function setStock(data:WarehouseData,entry:StockEntry,quantity:string):WarehouseData{
