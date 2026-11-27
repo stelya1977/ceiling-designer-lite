@@ -1,11 +1,12 @@
+import type {Consumable,ConsumableNeed} from './consumables'
 import NumericInput from './NumericInput'
 import {costLines,costSignature,summarizeCosts,type CostNeed,type ObjectCosts} from './objectCost'
 import type {CatalogItem} from './pricing'
 const money=(n:number)=>n.toLocaleString('uk-UA',{minimumFractionDigits:2,maximumFractionDigits:2})+' грн'
 const qty=(n:number)=>n.toLocaleString('uk-UA',{maximumFractionDigits:3})
-export default function ObjectFinance({needs,warnings,catalog,revenue,received,balance,value,onChange}:{needs:CostNeed[];warnings:string[];catalog:CatalogItem[];revenue:number;received:number;balance:number;value:ObjectCosts;onChange:(v:ObjectCosts)=>void}){
+export default function ObjectFinance({needs,warnings,catalog,rules,adjustments,revenue,received,balance,value,onChange}:{needs:CostNeed[];warnings:string[];catalog:CatalogItem[];rules:Consumable[];adjustments:{room:string;item:ConsumableNeed}[];revenue:number;received:number;balance:number;value:ObjectCosts;onChange:(v:ObjectCosts)=>void}){
  const signature=costSignature(needs),snapshot=value.snapshot,stale=!!snapshot&&snapshot.signature!==signature
- const current=costLines(needs,catalog),lines=snapshot?snapshot.lines:current
+ const current=costLines(needs,catalog,rules),lines=snapshot?snapshot.lines:current
  const summary=summarizeCosts(lines,revenue,value.wages,value.extra,!stale&&!warnings.length)
  const canFreeze=needs.length>0&&!warnings.length&&current.every(r=>r.amount!==null)
  const line=(label:string,v:string)=><div className="info-row"><span>{label}</span><b>{v}</b></div>
@@ -15,6 +16,7 @@ export default function ObjectFinance({needs,warnings,catalog,revenue,received,b
  {warnings.map((w,i)=><p key={i} style={{color:'#ffd27a'}}>{w}</p>)}
  {stale&&<p style={{color:'#ffd27a'}}>Матеріали об’єкта змінилися після фіксації. Старий розрахунок збережено; для актуального результату перевір і зафіксуй новий.</p>}
  {snapshot?<p>Ціни зафіксовано: {new Date(snapshot.at).toLocaleString('uk-UA')}</p>:<p className="muted">Ціни ще не зафіксовано.</p>}
+ <details><summary style={{cursor:'pointer',fontWeight:700}}>Розхідні матеріали · фактична кількість</summary><p className="muted">Порожнє поле — автоматична кількість; 0 — не використано. Ручні позиції вводяться на весь об’єкт. LED рахується за довжиною підсвітки в кімнаті.</p>{adjustments.map(({room,item})=><label key={item.key} style={{display:'grid',gap:5,margin:'10px 0'}}>{room} · {item.rule.name} ({item.rule.unit}){item.rule.method!=='manual'&&<small className="muted">За нормою: {qty(item.automatic)}</small>}<NumericInput value={value.consumableQuantities?.[item.key]} placeholder={qty(item.automatic)} commitOnBlur onChange={v=>{const next={...value.consumableQuantities};if(v==='')delete next[item.key];else next[item.key]=v;onChange({...value,consumableQuantities:next})}}/></label>)}</details>
  <details open={undefined}><summary style={{cursor:'pointer',fontWeight:700}}>Матеріали ({lines.length}) · {money(summary.known)}{summary.missing?` · без ціни: ${summary.missing}`:''}</summary>
  {lines.map((r,i)=><div className="info-row" key={i}><div><small className="muted">{r.room}</small><div>{r.label}</div><small>{qty(r.quantity)} {r.unit} × {r.unitPrice===null?'ціна не задана':money(r.unitPrice)}</small></div><b style={{color:r.amount===null?'#ffd27a':undefined}}>{r.amount===null?'—':money(r.amount)}</b></div>)}
  </details>

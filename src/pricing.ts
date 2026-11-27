@@ -1,9 +1,10 @@
+import type {Consumable} from './consumables'
 export type Category = 'Полотна' | 'Профілі' | 'Карнизи' | 'Освітлення основне' | 'Інше'
 export type CatalogCategory = Category | 'LED-профілі'
 export type Unit = 'м' | 'шт.' | 'м²'
 export type PurchasePrices = { purchasePrice?: string; cornerPurchasePrice?: string; ledPurchasePrice?: string; powerPurchasePrice?: string; grillePurchasePrice?: string }
-export type CatalogItem = PurchasePrices & { id: string; category: CatalogCategory; name: string; price: string; unit: Unit; stockLength: string; cornerPrice: string; freeCorners: string; description: string; billStock?: boolean; ledPrice?: string; powerPrice?: string; grillePrice?: string }
-export type Selection = { id: string; item: CatalogItem; quantity: string; corners: string; color: 'white'|'black'; ledEnabled: boolean; ledLength: string; ledColor: string; power: string; grilles: string }
+export type CatalogItem = PurchasePrices & { consumables?: Consumable[]; id: string; category: CatalogCategory; name: string; price: string; unit: Unit; stockLength: string; cornerPrice: string; freeCorners: string; description: string; billStock?: boolean; ledPrice?: string; powerPrice?: string; grillePrice?: string }
+export type Selection = { id: string; item: CatalogItem; quantity: string; corners: string; color: 'white'|'black'; ledEnabled: boolean; ledLength: string; ledColor: string; includedLedDisabled?: boolean; includedLedLength?: string; power: string; grilles: string }
 export type RoomPricing = { fabric: CatalogItem | null; standard: CatalogItem; insert: CatalogItem; insertColor: 'white'|'black'; insertOverride: string; standardCorners: string; items: Selection[] }
 export const categories: Category[] = ['Полотна', 'Профілі', 'Карнизи', 'Освітлення основне', 'Інше']
 export const categoryOf = (item: CatalogItem): Category => item.category === 'LED-профілі' ? 'Освітлення основне' : item.category
@@ -23,7 +24,7 @@ export function effectiveCatalog(raw: CatalogItem[]): CatalogItem[] {
 }
 // Owner-only purchase prices stay in the catalog in this release, not sales snapshots.
 export function snapshot(item: CatalogItem): CatalogItem {
-  const { purchasePrice, cornerPurchasePrice, ledPurchasePrice, powerPurchasePrice, grillePurchasePrice, ...sales } = item
+  const { purchasePrice, cornerPurchasePrice, ledPurchasePrice, powerPurchasePrice, grillePurchasePrice, consumables, ...sales } = item
   return {...sales,category:categoryOf(item)}
 }
 export function newPricing(catalog: CatalogItem[]): RoomPricing {
@@ -32,6 +33,14 @@ export function newPricing(catalog: CatalogItem[]): RoomPricing {
 }
 export function newSelection(v: CatalogItem, id: string): Selection {
   return {id,item:snapshot(v),quantity:v.unit==='шт.'?'1':'',corners:'0',color:'white',ledEnabled:false,ledLength:'',ledColor:'Тепле 3000K',power:'0',grilles:'0'}
+}
+// FLY and FN-27 normally include lighting in the sale price. Keep the material
+// quantity independent of the sales tariff, with an explicit opt-out.
+export const hasIncludedLed=(v:CatalogItem)=>['alutat-fly','fn27'].includes(v.id)&&(v.ledPrice===undefined||v.ledPrice==='')
+export function ledMaterialLength(s:Selection):number {
+ if(!num(s.quantity))return 0
+ if(hasIncludedLed(s.item))return s.includedLedDisabled?0:s.includedLedLength!==undefined&&s.includedLedLength!==''?num(s.includedLedLength):s.ledEnabled&&s.ledLength!==''?num(s.ledLength):num(s.quantity)
+ return s.ledEnabled?num(s.ledLength):0
 }
 export function stockPlan(need: number, text: string): {length:number; bars:{length:number; count:number}[]} {
   if (!(need>0)) return {length:0,bars:[]}
@@ -61,6 +70,6 @@ export function calculate(p: RoomPricing, area: number, perimeter: number) {
   if(p.fabric){push(`${p.fabric.name} (${fmt(area)} м²)`,area*num(p.fabric.price));mat(p.fabric.name,area,'м²');detail(p.fabric.name,area,'м²',num(p.fabric.price))}
   if(standardLength>0){const plan=stockPlan(standardLength,p.standard.stockLength);push(`${p.standard.name} (${fmt(standardLength)} м)`,(p.standard.billStock?plan.length:standardLength)*num(p.standard.price)); detail(p.standard.name+(p.standard.billStock&&plan.length>standardLength?` (монтаж ${fmt(standardLength)} м)`:''),p.standard.billStock?plan.length:standardLength,'м',num(p.standard.price)); if(plan.bars.length)plan.bars.forEach(b=>mat(`${p.standard.name} — планка ${fmt(b.length)} м`,b.count,'шт.'));else mat(p.standard.id==='standard-profile'?'Профіль пластиковий':p.standard.name,standardLength,'м');push(`Додаткові кути ${p.standard.name}`,Math.max(0,num(p.standardCorners)-num(p.standard.freeCorners))*num(p.standard.cornerPrice));detail(`Додаткові кути ${p.standard.name}`,Math.max(0,num(p.standardCorners)-num(p.standard.freeCorners)),'шт.',num(p.standard.cornerPrice))}
   push(`${p.insert.name} (${fmt(insertLength)} м)`,insertLength*num(p.insert.price));mat(`${p.insert.name} (${p.insertColor==='white'?'біла':'чорна'})`,insertLength,'м');detail(`${p.insert.name} (${p.insertColor==='white'?'біла':'чорна'})`,insertLength,'м',num(p.insert.price))
-  for(const s of p.items){const v=s.item,q=num(s.quantity);if(!q)continue;const plan=v.unit==='м'?stockPlan(q,v.stockLength):{length:q,bars:[]};const color=categoryOf(v)==='Карнизи'?` (${s.color==='white'?'білий':'чорний'})`:'';const name=v.name+color;let amount=(v.billStock?plan.length:q)*num(v.price);const corners=num(s.corners);amount+=Math.max(0,corners-num(v.freeCorners))*num(v.cornerPrice); const led=s.ledEnabled?num(s.ledLength):0;amount+=led*num(v.ledPrice)+num(s.power)*num(v.powerPrice)+num(s.grilles)*num(v.grillePrice);push(`${name} (${fmt(q)} ${v.unit})${led>0?` · ${s.ledColor}`:''}`,amount);detail(name+(v.billStock&&plan.length>q?` (монтаж ${fmt(q)} ${v.unit})`:''),v.billStock?plan.length:q,v.unit,num(v.price));detail(`Кути — ${name}`,Math.max(0,corners-num(v.freeCorners)),'шт.',num(v.cornerPrice));detail(`LED ${s.ledColor} — ${name}`,led,'м',num(v.ledPrice));detail(`Блоки живлення — ${name}`,num(s.power),'шт.',num(v.powerPrice));detail(`Магнітні решітки — ${name}`,num(s.grilles),'шт.',num(v.grillePrice));mat(plan.bars.length?`${name} — монтажна довжина`:name,q,v.unit);if(plan.bars.length)plan.bars.forEach(b=>mat(`${name} — планка ${fmt(b.length)} м`,b.count,'шт.'));mat(`Кути — ${name}`,corners,'шт.');mat(`LED ${s.ledColor} — ${name}`,led,'м');mat(`Блоки живлення — ${name}`,num(s.power),'шт.');mat(`Магнітні решітки — ${name}`,num(s.grilles),'шт.')}
+  for(const s of p.items){const v=s.item,q=num(s.quantity);if(!q)continue;const plan=v.unit==='м'?stockPlan(q,v.stockLength):{length:q,bars:[]};const color=categoryOf(v)==='Карнизи'?` (${s.color==='white'?'білий':'чорний'})`:'';const name=v.name+color;let amount=(v.billStock?plan.length:q)*num(v.price);const corners=num(s.corners);amount+=Math.max(0,corners-num(v.freeCorners))*num(v.cornerPrice); const led=s.ledEnabled?num(s.ledLength):0;amount+=led*num(v.ledPrice)+num(s.power)*num(v.powerPrice)+num(s.grilles)*num(v.grillePrice);push(`${name} (${fmt(q)} ${v.unit})${led>0?` · ${s.ledColor}`:''}`,amount);detail(name+(v.billStock&&plan.length>q?` (монтаж ${fmt(q)} ${v.unit})`:''),v.billStock?plan.length:q,v.unit,num(v.price));detail(`Кути — ${name}`,Math.max(0,corners-num(v.freeCorners)),'шт.',num(v.cornerPrice));detail(`LED ${s.ledColor} — ${name}`,led,'м',num(v.ledPrice));detail(`Блоки живлення — ${name}`,num(s.power),'шт.',num(v.powerPrice));detail(`Магнітні решітки — ${name}`,num(s.grilles),'шт.',num(v.grillePrice));mat(plan.bars.length?`${name} — монтажна довжина`:name,q,v.unit);if(plan.bars.length)plan.bars.forEach(b=>mat(`${name} — планка ${fmt(b.length)} м`,b.count,'шт.'));mat(`Кути — ${name}`,corners,'шт.');mat(`LED ${s.ledColor} — ${name}`,ledMaterialLength(s),'м');mat(`Блоки живлення — ${name}`,num(s.power),'шт.');mat(`Магнітні решітки — ${name}`,num(s.grilles),'шт.')}
   return {rows,detailedRows,materials,used,standardLength,insertLength,total:rows.reduce((sum,r)=>sum+r.amount,0),overrun:used>perimeter+1e-6,insertClamped:p.insertOverride!==''&&num(p.insertOverride)>standardLength+1e-6}
 }

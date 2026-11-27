@@ -1,5 +1,5 @@
 import NumericInput from './NumericInput'
-import { calculate, categoryOf, newSelection, num, snapshot, stockPlan, type CatalogItem, type RoomPricing, type Selection, type Category } from './pricing'
+import { calculate, categoryOf, hasIncludedLed, ledMaterialLength, newSelection, num, snapshot, stockPlan, type CatalogItem, type RoomPricing, type Selection, type Category } from './pricing'
 
 type Props = { pricing: RoomPricing; catalog: CatalogItem[]; area: number | null; perimeter: number | null; onChange:(p:RoomPricing)=>void }
 const format=(n:number)=>n.toLocaleString('uk-UA',{maximumFractionDigits:2})
@@ -29,6 +29,7 @@ export default function RoomComponents({pricing:p,catalog,area,perimeter,onChang
       {category==='Карнизи'&&<label>Колір<select value={s.color} onChange={ev=>edit(s.id,{color:ev.target.value as 'white'|'black'})}><option value="white">Білий</option><option value="black">Чорний</option></select></label>}
       {(category==='Профілі'||num(v.cornerPrice)>0)&&input(`Кути, шт. (${v.cornerPrice||0} ₴/шт.; безкоштовно ${v.freeCorners||0})`,s.corners,q=>edit(s.id,{corners:q}),true)}
       {v.ledPrice!==undefined&&v.ledPrice!==''&&<><label>Підсвітка<select value={s.ledEnabled?'yes':'no'} onChange={ev=>edit(s.id,{ledEnabled:ev.target.value==='yes'})}><option value="no">Без підсвітки</option><option value="yes">З підсвіткою</option></select></label>{s.ledEnabled&&<><label>Колір світла<select value={s.ledColor} onChange={ev=>edit(s.id,{ledColor:ev.target.value})}><option>Тепле 3000K</option><option>Нейтральне 4000K</option><option>Холодне 6000K</option><option>RGB</option></select></label>{input(`Довжина LED, м (${v.ledPrice} ₴/м)`,s.ledLength,q=>edit(s.id,{ledLength:q}))}</>}</>}
+      {hasIncludedLed(v)&&<><label>LED у складі профілю (тільки матеріали)<select value={s.includedLedDisabled?'no':'yes'} onChange={ev=>edit(s.id,{includedLedDisabled:ev.target.value==='no'})}><option value="yes">З підсвіткою</option><option value="no">Без підсвітки</option></select></label>{!s.includedLedDisabled&&<><label>Колір світла<select value={s.ledColor} onChange={ev=>edit(s.id,{ledColor:ev.target.value})}><option>Тепле 3000K</option><option>Нейтральне 4000K</option><option>Холодне 6000K</option><option>RGB</option></select></label>{input('Довжина LED, м (порожньо — автоматично)',s.includedLedLength??'',q=>edit(s.id,{includedLedLength:q}))}<p className="muted">До матеріалів: {format(ledMaterialLength(s))} м. Ціна клієнта не змінюється.</p></>}</>}
       {v.powerPrice!==undefined&&v.powerPrice!==''&&input(`Блоки живлення, шт. (${v.powerPrice} ₴)`,s.power,q=>edit(s.id,{power:q}),true)}
       {v.grillePrice!==undefined&&v.grillePrice!==''&&input(`Магнітні решітки, шт. (${v.grillePrice} ₴)`,s.grilles,q=>edit(s.id,{grilles:q}),true)}
     </div>})}

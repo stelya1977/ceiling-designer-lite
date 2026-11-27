@@ -6,7 +6,9 @@ import { StaffManager, JobAssignment, type JobPayload } from './Staff'
 import OwnerCalendar from './OwnerCalendar'
 import Finance from './Finance'
 import ObjectFinance from './ObjectFinance'
-import {roomNeeds,type ObjectCosts,type CostNeed} from './objectCost'
+import {roomNeeds,consumableCostNeeds,type ObjectCosts,type CostNeed} from './objectCost'
+import Consumables from './Consumables'
+import {rulesFromCatalog,automaticNeeds,manualNeeds,LED_ID,type Consumable,type ConsumableNeed} from './consumables'
 import {reviseDeposit,assignDepositDate,kyivDay,type MoneyPart,type CashRow} from './financeMath'
 import type {PayrollEstimate} from './payrollMath'
 import { consolidateMaterials, type InstallerMaterial } from './installerMaterials'
@@ -311,6 +313,9 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>(readProjects)
   const [catalog, setCatalog] = useState<CatalogItem[]>(readCatalog)
   const availableCatalog = useMemo(() => effectiveCatalog(catalog), [catalog])
+  const consumableRules=useMemo(()=>rulesFromCatalog(catalog),[catalog])
+  const [consumablesPage,setConsumablesPage]=useState(false)
+  function saveConsumables(rules:Consumable[]){setCatalog(items=>effectiveCatalog(items).map(item=>item.id==='standard-profile'?{...item,consumables:rules}:item))}
   const [catalogPage, setCatalogPage] = useState(false)
   const [ownerPage,setOwnerPage]=useState<'staff'|'mounts'|'finance'|null>(null)
   const [catalogCategory, setCatalogCategory] = useState<CatalogCategory>('Профілі')
@@ -364,7 +369,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.44')
+        setUpdateAvailable(event.data.version !== '0.7.45')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -662,7 +667,7 @@ export default function App() {
   }
 
   function projectCostNeeds(p:Project) {
-    const needs:CostNeed[]=[],warnings:string[]=[]
+    const needs:CostNeed[]=[],warnings:string[]=[],adjustments:{room:string;item:ConsumableNeed}[]=[]
     for(const r of p.rooms){
       const area=actualRoomArea(r),perimeter=roomPerimeter(r)
       if(area===null||!(area>0)||perimeter===null||!(perimeter>0))warnings.push(`${r.name}: перевір фактичну площу та периметр.`)
@@ -670,10 +675,16 @@ export default function App() {
       if(!r.pricing){warnings.push(`${r.name}: старий формат комплектуючих. Переведи кімнату на новий каталог і перевір кількості перед розрахунком.`);continue}
       const result=roomNeeds(r.id,r.name,r.pricing,area||0,perimeter||0)
       needs.push(...result.needs)
+      const auto=automaticNeeds(r.pricing,perimeter||0,consumableRules,r.id,p.objectCosts?.consumableQuantities)
+      needs.push(...consumableCostNeeds(r.id,r.name,auto))
+      adjustments.push(...auto.filter(n=>n.rule.id!==LED_ID).map(item=>({room:r.name,item})))
       if(result.overrun)warnings.push(`${r.name}: довжина профілів перевищує периметр.`)
     }
     if(!p.rooms.length)warnings.push('У об’єкті немає кімнат.')
-    return {needs,warnings}
+    const manual=manualNeeds(consumableRules,p.objectCosts?.consumableQuantities)
+    needs.push(...consumableCostNeeds('','Весь об’єкт',manual))
+    adjustments.push(...manual.map(item=>({room:'Весь об’єкт',item})))
+    return {needs,warnings,adjustments}
   }
 
   function money(value: number) {
@@ -944,6 +955,7 @@ export default function App() {
       if(room.pricing){
         const m=calculate(room.pricing,actualRoomArea(room)||0,roomPerimeter(room)||0)
         for(const v of m.materials)addTotal(v.label,v.quantity,v.unit)
+        for(const n of automaticNeeds(room.pricing,roomPerimeter(room)||0,consumableRules,room.id,project.objectCosts?.consumableQuantities)){if(n.rule.id!==LED_ID)addTotal(n.rule.name,n.quantity,n.rule.unit)}
         if(m.overrun)warnings.push(`${room.name}: довжина периметральних профілів перевищує периметр`)
       }else{
         const plasticLength=Math.max(0,(roomPerimeter(room)||0)-(c.flyEnabled?num(c.flyLength):0)-(c.udEnabled?num(c.udLength):0))
@@ -957,6 +969,7 @@ export default function App() {
         addTotal('Блоки живлення FN-27',num(c.fn27Power),'шт.');addTotal('Магнітні решітки FN-27',num(c.fn27Grilles),'шт.')
         e.catalogItems.forEach(item=>addTotal(item.name,num(item.quantity),item.unit||'шт.'))
         addTotal('Додаткові кути стандартного профілю',Math.max(0,num(c.standardCorners)-4),'шт.')
+        warnings.push(`${room.name}: старий формат комплектуючих; для розхідників переведи кімнату на новий каталог.`)
         if((c.flyEnabled?num(c.flyLength):0)+(c.udEnabled?num(c.udLength):0)>(roomPerimeter(room)||0)+1e-6)warnings.push(`${room.name}: довжина периметральних профілів перевищує периметр`)
       }
       if(room.shape==='polygon' && room.estimateAreaMode==='bounds' && actualRoomArea(room)===null)warnings.push(`${room.name}: фактична площа полотна не вказана; дивись креслення`)
@@ -972,6 +985,7 @@ export default function App() {
       const diagonals=roomData.diagonals.filter(v=>v.length>0).map(v=>`${v.label}: ${qty(v.length)}`).join(' · ')
       return `<section class="room"><h2>${esc(room.name)}</h2><div class="roomgrid"><div><p>${esc(roomData.canvas)}</p><p>${esc(dimensions)}</p>${diagonals?`<p>Діагоналі: ${esc(diagonals)}</p>`:''}${roomData.referenceMeasurements?.length?`<p>Від точки 0: ${esc(roomData.referenceMeasurements.map(v=>`${v.label}: ${qty(v.length)}`).join(' · '))}</p>`:''}${roomData.overallWidth?`<p>Габаритна ширина: ${qty(roomData.overallWidth)}</p>`:''}${roomData.overallHeight?`<p>Габаритна висота: ${qty(roomData.overallHeight)}</p>`:''}${featureTexts(room).map(t=>`<p>${esc(t)}</p>`).join('')}</div>${drawing}</div>${index===project.rooms.length-1?ceilingCountHtml(project.rooms.length):''}</section>`
     }).join('')
+    for(const n of manualNeeds(consumableRules,project.objectCosts?.consumableQuantities))if(n.quantity>0)allMaterials.push({label:n.rule.name,quantity:n.quantity,unit:n.rule.unit})
     const totals=consolidateMaterials(allMaterials)
     const summaryHtml = totals.map(line=>`<li>${esc(line)}</li>`).join('')
     const warningsHtml = warnings.map(line=>`<p><b>УВАГА:</b> ${esc(line)}</p>`).join('')
@@ -1271,7 +1285,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.44</small>
+          <small>Версія 0.7.45</small>
         </div>
       </aside>
 
@@ -1281,7 +1295,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.44</small>
+            <small>v0.7.45</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1309,8 +1323,10 @@ export default function App() {
           <section className="content narrow">
             <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування цінами продажу та закупівлі. Закупівельні ціни не змінюють кошторис клієнта. Дані зберігаються локально та синхронізуються після входу.</p></div></div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-              {categories.map(cat => <button key={cat} style={{ ...buttonStyle, background: catalogCategory === cat ? '#ffb900' : '#405263', color: catalogCategory === cat ? '#18222c' : '#fff' }} onClick={() => { setCatalogCategory(cat); setEditingCatalogId(null); setCatalogDraft({ ...emptyCatalogDraft, category: cat, unit: cat==='Полотна'?'м²':'м' }) }}>{cat}</button>)}
+              {categories.map(cat => <button key={cat} style={{ ...buttonStyle, background: !consumablesPage && catalogCategory === cat ? '#ffb900' : '#405263', color: !consumablesPage && catalogCategory === cat ? '#18222c' : '#fff' }} onClick={() => { setConsumablesPage(false); setCatalogCategory(cat); setEditingCatalogId(null); setCatalogDraft({ ...emptyCatalogDraft, category: cat, unit: cat==='Полотна'?'м²':'м' }) }}>{cat}</button>)}
+              <button style={{...buttonStyle,background:consumablesPage?'#ffb900':'#405263',color:consumablesPage?'#18222c':'#fff'}} onClick={()=>setConsumablesPage(true)}>Розхідні матеріали</button>
             </div>
+            {consumablesPage?<Consumables rules={consumableRules} catalog={availableCatalog} onChange={saveConsumables}/>:<>
             <div className="panel form-panel">
               <h2>{editingCatalogId ? 'Редагувати позицію' : 'Додати позицію'}</h2>
               <label>Назва<input value={catalogDraft.name} onChange={e => setCatalogDraft(v => ({ ...v, name: e.target.value }))} placeholder="Назва виробу"/></label>
@@ -1336,7 +1352,7 @@ export default function App() {
                 <label>Основна позиція, грн/{catalogDraft.unit}<NumericInput value={catalogDraft.purchasePrice} onChange={value=>setCatalogDraft(v=>({...v,purchasePrice:value}))}/></label>
                 {(['Профілі','Карнизи','Освітлення основне'].includes(catalogCategory))&&<>
                   <label>Кут (матеріал), грн/шт.<NumericInput value={catalogDraft.cornerPurchasePrice} onChange={value=>setCatalogDraft(v=>({...v,cornerPurchasePrice:value}))}/></label>
-                  <label>LED-стрічка, грн/м<NumericInput value={catalogDraft.ledPurchasePrice} onChange={value=>setCatalogDraft(v=>({...v,ledPurchasePrice:value}))}/></label>
+                  <p className="muted">Закупівельна ціна LED-стрічки — у розділі «Розхідні матеріали».</p>
                   <label>Блок живлення, грн/шт.<NumericInput value={catalogDraft.powerPurchasePrice} onChange={value=>setCatalogDraft(v=>({...v,powerPurchasePrice:value}))}/></label>
                   <label>Магнітна решітка, грн/шт.<NumericInput value={catalogDraft.grillePurchasePrice} onChange={value=>setCatalogDraft(v=>({...v,grillePurchasePrice:value}))}/></label>
                 </>}
@@ -1344,7 +1360,8 @@ export default function App() {
               <label>Примітки та додаткові тарифи<textarea value={catalogDraft.description} onChange={e => setCatalogDraft(v => ({ ...v, description: e.target.value }))} rows={3}/></label>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button className="button" disabled={!catalogDraft.name.trim()||catalogDraft.price.trim()===''||Number(catalogDraft.price)<0} onClick={() => {
-                  const draft={...catalogDraft,category:catalogCategory,unit:catalogCategory==='Полотна'?'м²' as const:editingCatalogId==='standard-profile'||editingCatalogId==='decorative-insert'?'м' as const:catalogDraft.unit}
+                  const {consumables:_rules,...productDraft}=catalogDraft as typeof catalogDraft & {consumables?:Consumable[]}
+                  const draft={...productDraft,category:catalogCategory,unit:catalogCategory==='Полотна'?'м²' as const:editingCatalogId==='standard-profile'||editingCatalogId==='decorative-insert'?'м' as const:catalogDraft.unit}
                   if (editingCatalogId) setCatalog(items => effectiveCatalog(items).map(item => item.id === editingCatalogId ? { ...item, ...draft } : item))
                   else setCatalog(items => [...effectiveCatalog(items), { id: makeId(), ...draft }])
                   setEditingCatalogId(null); setCatalogDraft({ ...emptyCatalogDraft, category: catalogCategory, unit: catalogCategory==='Полотна'?'м²':'м' })
@@ -1355,12 +1372,13 @@ export default function App() {
             <div className="panel" style={{ marginTop: 16 }}>
               <h2>{catalogCategory}</h2>
               {availableCatalog.filter(item => categoryOf(item) === catalogCategory).map(item => <div key={item.id} className="info-row" style={{ alignItems: 'flex-start', gap: 12 }}>
-                <div style={{ flex: 1 }}><b>{item.name}</b><div className="muted">Продаж: {item.price} ₴/{item.unit} {item.stockLength ? `· Планки: ${item.stockLength} м` : ''}{Number(item.cornerPrice || 0) > 0 ? ` · Кут: ${item.cornerPrice} ₴` : ''}{Number(item.freeCorners || 0) > 0 ? ` · Безкоштовно: ${item.freeCorners}` : ''}</div>{item.billStock&&<div className="muted">Ціна за закуплену довжину</div>}{item.ledPrice&&<div className="muted">LED: {item.ledPrice} ₴/м</div>}{item.powerPrice&&<div className="muted">БЖ: {item.powerPrice} ₴/шт.</div>}{item.grillePrice&&<div className="muted">Решітка: {item.grillePrice} ₴/шт.</div>}<div style={{color:'#ffd87a',marginTop:5}}>Закупівля: {item.purchasePrice==null||item.purchasePrice===''?'не задано':`${item.purchasePrice} ₴/${item.unit}`}</div>{([['Кут',item.cornerPurchasePrice,'шт.'],['LED',item.ledPurchasePrice,'м'],['БЖ',item.powerPurchasePrice,'шт.'],['Решітка',item.grillePurchasePrice,'шт.']] as const).filter(([,value])=>value!=null&&value!=='').map(([label,value,unit])=><div key={label} className="muted">Закупівля · {label}: {value} ₴/{unit}</div>)}{item.description && <small className="muted">Примітка: {item.description}</small>}</div>
+                <div style={{ flex: 1 }}><b>{item.name}</b><div className="muted">Продаж: {item.price} ₴/{item.unit} {item.stockLength ? `· Планки: ${item.stockLength} м` : ''}{Number(item.cornerPrice || 0) > 0 ? ` · Кут: ${item.cornerPrice} ₴` : ''}{Number(item.freeCorners || 0) > 0 ? ` · Безкоштовно: ${item.freeCorners}` : ''}</div>{item.billStock&&<div className="muted">Ціна за закуплену довжину</div>}{item.ledPrice&&<div className="muted">LED: {item.ledPrice} ₴/м</div>}{item.powerPrice&&<div className="muted">БЖ: {item.powerPrice} ₴/шт.</div>}{item.grillePrice&&<div className="muted">Решітка: {item.grillePrice} ₴/шт.</div>}<div style={{color:'#ffd87a',marginTop:5}}>Закупівля: {item.purchasePrice==null||item.purchasePrice===''?'не задано':`${item.purchasePrice} ₴/${item.unit}`}</div>{([['Кут',item.cornerPurchasePrice,'шт.'],['БЖ',item.powerPurchasePrice,'шт.'],['Решітка',item.grillePurchasePrice,'шт.']] as const).filter(([,value])=>value!=null&&value!=='').map(([label,value,unit])=><div key={label} className="muted">Закупівля · {label}: {value} ₴/{unit}</div>)}{item.description && <small className="muted">Примітка: {item.description}</small>}</div>
                 <button className="button secondary" onClick={() => { setEditingCatalogId(item.id); setCatalogDraft({ ...emptyCatalogDraft, ...item, cornerPrice: item.cornerPrice ?? '0', freeCorners: item.freeCorners ?? '0', billStock:item.billStock??false,ledPrice:item.ledPrice??'',powerPrice:item.powerPrice??'',grillePrice:item.grillePrice??'',purchasePrice:item.purchasePrice??'',cornerPurchasePrice:item.cornerPurchasePrice??'',ledPurchasePrice:item.ledPurchasePrice??'',powerPurchasePrice:item.powerPurchasePrice??'',grillePurchasePrice:item.grillePurchasePrice??'' }) }}>Редагувати</button>
                 <button className="icon-button" aria-label="Видалити" disabled={['fabric-msd','standard-profile','decorative-insert'].includes(item.id)} onClick={() => { if (confirm(`Видалити «${item.name}» з каталогу?`)) setCatalog(items => effectiveCatalog(items).filter(v => v.id !== item.id)) }}><Trash2 size={16}/></button>
               </div>)}
               {availableCatalog.filter(item => categoryOf(item) === catalogCategory).length === 0 && <p className="muted">У цій категорії поки немає позицій.</p>}
             </div>
+            </>}
           </section>
         ) : estimateProject ? (
           <section className="content narrow">
@@ -1850,7 +1868,7 @@ export default function App() {
               <h2>Оплата виконаного об’єкта</h2>
               {(()=>{const info=projectPayment(active);return <><div className="info-row"><span>Статус оплати</span><b style={{color:info.paid?'#60c692':'#ffc247'}}>{info.paid?'Оплачено':'Не оплачено'}</b></div><div className="info-row"><span>Вартість замовлення</span><b>{money(info.total)}</b></div><div className="info-row"><span>Завдаток</span><b>{money(info.deposit)}</b></div>{info.final>0&&<div className="info-row"><span>Остаточна оплата</span><b>{money(info.final)}</b></div>}<div className="info-row"><span>Залишок до оплати</span><b>{money(info.balance)}</b></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button className="button primary" disabled={info.paid||info.total<=0} onClick={()=>markPayment(active,true)}>Оплачено</button><button className="button secondary" disabled={!info.final||!!active.workerReceiptId} onClick={()=>markPayment(active,false)}>Скасувати остаточну оплату</button></div>{info.total<=0&&<p className="muted">Спочатку сформуй кошторис.</p>}</>})()}
             </div>}
-            {financeProjectId===active.id&&(()=>{const info=projectPayment(active),costs=projectCostNeeds(active);return <ObjectFinance key={active.id} {...costs} catalog={availableCatalog} revenue={info.total} received={info.deposit+info.final} balance={info.balance} value={active.objectCosts||{}} onChange={objectCosts=>syncProject({...active,objectCosts})}/>})()}
+            {financeProjectId===active.id&&(()=>{const info=projectPayment(active),costs=projectCostNeeds(active);return <ObjectFinance key={active.id} {...costs} rules={consumableRules} catalog={availableCatalog} revenue={info.total} received={info.deposit+info.final} balance={info.balance} value={active.objectCosts||{}} onChange={objectCosts=>syncProject({...active,objectCosts})}/>})()}
             <div className="detail-grid">
               <div className="panel">
                 <h2>Інформація про об’єкт</h2>

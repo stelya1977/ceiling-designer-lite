@@ -1,0 +1,22 @@
+import {useState} from 'react'
+import NumericInput from './NumericInput'
+import {groups,LED_ID,type Consumable,type Method} from './consumables'
+import type {CatalogItem,Unit} from './pricing'
+const blank=():Consumable=>({id:'',name:'',price:'',unit:'шт.',method:'step',rate:'8',targets:[],active:true})
+const methodLabels:Record<Method,string>={step:'За кроком, см',point:'На точку',metre:'На погонний метр',manual:'Вручну по об’єкту'}
+export default function Consumables({rules,catalog,onChange}:{rules:Consumable[];catalog:CatalogItem[];onChange:(r:Consumable[])=>void}){
+ const [d,setD]=useState<Consumable>(blank),[editing,setEditing]=useState(false)
+ const change=(v:Partial<Consumable>)=>setD(x=>({...x,...v})),locked=d.id===LED_ID
+ const targets=[...groups.map(([id,name])=>({id,name})),...catalog.filter(v=>v.unit==='м'||v.unit==='шт.').map(v=>({id:'item:'+v.id,name:v.name+' ('+v.unit+')'}))]
+ const allowed=(id:string)=>d.method==='point'?id==='lights'||catalog.some(v=>'item:'+v.id===id&&v.unit==='шт.'):d.method==='manual'?false:id!=='lights'&&(id==='wall'||id==='cornice'||id==='fn27'||id==='led'||catalog.some(v=>'item:'+v.id===id&&v.unit==='м'))
+ const rate=Number(d.rate),valid=d.name.trim()&&(d.price===''||Number.isFinite(Number(d.price))&&Number(d.price)>=0)&&(d.method==='manual'||Number.isFinite(rate)&&rate>0&&d.targets.length>0&&d.targets.every(allowed))
+ const save=()=>{if(!valid)return;const v={...d,name:d.name.trim(),id:d.id||'cons-'+crypto.randomUUID()};onChange(d.id?rules.map(r=>r.id===d.id?v:r):[...rules,v]);setD(blank());setEditing(false)}
+ return <div className="panel form-panel"><h2>Розхідні матеріали · тільки для адміністратора</h2><p className="muted">Єдиний каталог закупівельних цін та норм. Ціни продажу не змінюються. Порожня ціна означає, що собівартість не завершена. LED-стрічка має спільну закупівельну ціну.</p>
+ {rules.map(r=><div key={r.id} className="info-row" style={{gap:8,flexWrap:'wrap'}}><div style={{flex:1,minWidth:150}}><b>{r.name}</b><div className="muted">{r.active?'Активна':'Вимкнена'} · {methodLabels[r.method]}{r.method==='manual'?'':`: ${r.rate}`} · {r.price===''?'Ціна не задана':`${r.price} грн/${r.unit}`}</div><small className="muted">{r.targets.map(t=>targets.find(x=>x.id===t)?.name||'Видалена позиція').join(', ')}</small></div><button className="button secondary" onClick={()=>{setD({...r,targets:[...r.targets]});setEditing(true)}}>Редагувати</button>{r.id!==LED_ID&&<button className="button secondary" onClick={()=>onChange(rules.map(x=>x.id===r.id?{...x,active:!x.active}:x))}>{r.active?'Вимкнути':'Увімкнути'}</button>}</div>)}
+ {!editing?<button className="button" onClick={()=>{setD(blank());setEditing(true)}}>+ Додати розхідник</button>:<div className="form-panel" style={{display:'grid',gap:10,borderTop:'1px solid #647586',paddingTop:12}}>
+ <h3>{d.id?'Редагувати розхідник':'Нова позиція'}</h3><label>Назва<input value={d.name} disabled={locked} onChange={e=>change({name:e.target.value})}/></label><label>Закупівельна ціна, грн<NumericInput value={d.price} onChange={price=>change({price})}/></label><label>Одиниця<select disabled={locked} value={d.unit} onChange={e=>change({unit:e.target.value as Unit})}><option>шт.</option><option>м</option><option>м²</option></select></label>
+ <label>Спосіб розрахунку<select value={d.method} disabled={locked} onChange={e=>{const method=e.target.value as Method;change({method,targets:[],rate:method==='step'?'8':'1'})}}>{Object.entries(methodLabels).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select></label>
+ {d.method!=='manual'&&<><label>{d.method==='step'?'Крок, см':d.method==='point'?'Кількість на точку':'Кількість на метр'}<NumericInput value={d.rate} onChange={rate=>{if(!locked)change({rate})}}/></label><div><b>Застосувати до</b>{targets.filter(t=>allowed(t.id)).map(t=><label key={t.id} style={{display:'flex',alignItems:'center',gap:8,margin:'8px 0'}}><input type="checkbox" style={{width:'auto'}} disabled={locked} checked={d.targets.includes(t.id)} onChange={e=>change({targets:e.target.checked?[...d.targets,t.id]:d.targets.filter(x=>x!==t.id)})}/>{t.name}</label>)}</div></>}
+ <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button className="button" disabled={!valid} onClick={save}>Зберегти позицію</button><button className="button secondary" onClick={()=>{setEditing(false);setD(blank())}}>Скасувати</button></div></div>}
+ </div>
+}
