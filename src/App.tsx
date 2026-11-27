@@ -10,6 +10,7 @@ import { consolidateMaterials, type InstallerMaterial } from './installerMateria
 import RoomComponents from './RoomComponents'
 import NumericInput from './NumericInput'
 import { metresToCm, cmToMetres, formatCm } from './measurementUnits'
+import { solveMeasuredPolygon, fitDrawing, rectangleDrawing, type GeometryResult } from './measuredGeometry'
 
 import { activeStatuses, localDate, projectDate, payment, archive, restore, matchesDate, calendarDays, shiftMonth, type Workflow } from './projectWorkflow'
 import { categories, categoryOf, effectiveCatalog, newPricing, newSelection, calculate, snapshot, stockPlan, num, type DetailedPriceRow, type CatalogCategory, type CatalogItem, type RoomPricing, type Unit } from './pricing'
@@ -60,6 +61,7 @@ type Room = {
   shape: 'rectangle' | 'polygon'
   sides: Side[]
   vertices?: Point[]
+  geometryMode?: 'sketch' | 'measured'
   diagonals?: Record<string, string>
   overallWidth?: string
   overallHeight?: string
@@ -148,6 +150,34 @@ const regularVertices = (count: number): Point[] =>
     const a = -Math.PI / 2 + i * 2 * Math.PI / count
     return { x: 180 + 112 * Math.cos(a), y: 112 + 78 * Math.sin(a) }
   })
+const geometryCache = new WeakMap<Room, GeometryResult>()
+function sketchPoints(room: Room): Point[] {
+  return room.vertices?.length===room.sides.length ? room.vertices : regularVertices(room.sides.length || 4)
+}
+function measuredGeometry(room: Room): GeometryResult {
+  const cached=geometryCache.get(room); if(cached)return cached
+  const result=solveMeasuredPolygon(room.sides.map(s=>s.length),room.diagonals||{},sketchPoints(room))
+  geometryCache.set(room,result);return result
+}
+function drawingPoints(room: Room, width=360, height=230): Point[] {
+  if(room.shape==='rectangle')return rectangleDrawing(room.length,room.width,width,height)
+  const result=room.geometryMode==='measured'?measuredGeometry(room):null
+  return fitDrawing(result?.ok?result.points:sketchPoints(room),width,height,30)
+}
+function unverifiedMeasuredRooms(project: Project): Room[] {
+  return project.rooms.filter(r=>r.shape==='polygon'&&r.geometryMode==='measured'&&!measuredGeometry(r).ok)
+}
+function rectangleMismatch(room: Room): boolean {
+  if(room.shape!=='rectangle'||!(Number(room.length)>0)||!(Number(room.width)>0))return false
+  const expected=Math.hypot(Number(room.length),Number(room.width))
+  return ['A-C','B-D'].some(k=>{const n=Number(room.diagonals?.[k]);return n>0&&Math.abs(n-expected)>0.005000001})
+}
+function geometryNote(room:Room):string {
+  if(room.shape==='rectangle')return rectangleMismatch(room)?'УВАГА: діагоналі не відповідають прямокутнику. Перевір заміри або обери складну форму.':!(Number(room.length)>0&&Number(room.width)>0)?'Ескіз: не всі розміри внесено.':''
+  if(room.geometryMode!=='measured')return 'Ескіз: пропорції за замірами не перевірені.'
+  const result=measuredGeometry(room)
+  return result.ok?'':`УВАГА: контур не підтверджено. ${result.reason}`
+}
 const defaultComponents = () => ({
   ceiling: 'fabric' as const,
   profile: 'standard' as const,
@@ -285,7 +315,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.37')
+        setUpdateAvailable(event.data.version !== '0.7.38')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -521,6 +551,7 @@ export default function App() {
   }
 
   const activeRoom = active?.rooms.find(r => r.id === activeRoomId)
+  const editorPoints=activeRoom&&activeRoom.shape==='polygon'?(activeRoom.geometryMode==='measured'?drawingPoints(activeRoom):sketchPoints(activeRoom)):[]
 
   function updateRoom(roomId: string, patch: Partial<Room>) {
     if (!active) return
@@ -554,6 +585,7 @@ export default function App() {
   function actualRoomArea(room: Room): number | null {
     if (room.shape === 'rectangle') return room.length && room.width ? room.length * room.width : null
     if (room.actualAreaOverride != null && room.actualAreaOverride !== '') return positiveAreaNumber(room.actualAreaOverride)
+    if(room.geometryMode==='measured'){const result=measuredGeometry(room);return result.ok?result.area:null}
     return polygonArea(room)
   }
 
@@ -711,6 +743,7 @@ export default function App() {
 
   function exportEstimate(format: 'pdf' | 'jpeg', detailed = false) {
     if (!estimateProject) return
+    if(unverifiedMeasuredRooms(estimateProject).length){alert('Перевір геометрію стель перед друком кошторису.');return}
     if (missingBounds(estimateProject)) { alert('Введи габаритну ширину й висоту в усіх кімнатах, де вибрано «По габаритах».'); return }
     const sections = estimateRows(estimateProject)
     const base = sections.reduce((sum, section) => sum + section.total, 0)
@@ -803,27 +836,22 @@ export default function App() {
   function exportCuttingPlan() {
     const project = active || estimateProject
     if (!project) return
+    const invalid=unverifiedMeasuredRooms(project)
+    if(invalid.length){alert('Перевір геометрію перед друком: '+invalid.map(r=>r.name).join(', '));return}
     const esc = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
     const fmt = formatCm
     const roomPages = project.rooms.map((room, index) => {
-      let drawing = ''
-      let orderedSides: Side[] = []
-      if (room.shape === 'rectangle') {
-        drawing = `<svg class="drawing" viewBox="0 0 600 420" role="img" aria-label="Полотно ${index + 1}">
-          <polygon points="130,330 130,90 470,90 470,330" fill="#fff" stroke="#111" stroke-width="3"/>
-          <g fill="#111" font-size="22" font-family="Arial"><text x="112" y="350">A</text><text x="112" y="82">B</text><text x="480" y="82">C</text><text x="480" y="350">D</text><text x="300" y="215" text-anchor="middle" font-size="24" font-weight="bold">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text></g></svg>`
-      } else {
-        const pts = room.vertices?.length===room.sides.length ? room.vertices : regularVertices(room.sides.length || 4)
-        orderedSides = room.sides
-        const poly = pts.map(v => `${v.x},${v.y}`).join(' ')
-        const vertices = pts.map((v, i) => `<text x="${v.x+10}" y="${v.y-10}" font-size="14" font-weight="bold" fill="#111">${String.fromCharCode(65+i)}</text>`).join('')
-        drawing = `<svg class="drawing" viewBox="-24 -24 408 278"><polygon points="${poly}" fill="#fff" stroke="#111" stroke-width="2.5" stroke-linejoin="round"/>${vertices}<text x="180" y="115" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text></svg>`
-      }
+      const orderedSides=room.sides
+      const pts=drawingPoints(room,360,230)
+      const poly=pts.map(v=>`${v.x},${v.y}`).join(' ')
+      const vertices=pts.map((v,i)=>`<text x="${v.x+8}" y="${v.y-8}" font-size="14" font-weight="bold" fill="#111">${String.fromCharCode(65+i)}</text>`).join('')
+      const drawing=`<svg class="drawing" viewBox="-8 -8 376 246" role="img" aria-label="Полотно ${index+1}"><polygon points="${poly}" fill="#fff" stroke="#111" stroke-width="2.5" stroke-linejoin="round"/>${vertices}<text x="180" y="115" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">${esc(room.canvasNumber || `Полотно №${index+1}`)}</text></svg>`
+      const note=geometryNote(room)
       const diagonals = Object.entries(room.diagonals || {}).filter(([key, value]) => validDiagonal(key,room.shape==='rectangle'?4:room.sides.length) && Number(value) > 0).map(([key, value]) => `${key} = ${fmt(value)}`).join(' · ')
       const overall = [num(room.overallWidth)>0?`Габаритна ширина = ${fmt(room.overallWidth)}`:'',num(room.overallHeight)>0?`Габаритна висота = ${fmt(room.overallHeight)}`:''].filter(Boolean).join(' · ')
       const c = room.components
       const special = room.pricing ? room.pricing.items.some(v=>['alutat-fly','shadow-ud'].includes(v.item.id)&&num(v.quantity)>0) : !!(c && (((c.flyEnabled??c.profile==='fly')&&num(c.flyLength||c.profileLength)>0)||((c.udEnabled??c.profile==='ud')&&num(c.udLength||c.profileLength)>0)))
-      return `<section class="sheet"><div class="sheet-head"><div><p class="sheet-object">Об’єкт: ${esc(projectObjectName(project))}</p><h2>Полотно: ${esc(room.canvasNumber || `№${index + 1}`)}</h2><p>${esc(room.name || `Приміщення ${index + 1}`)}</p></div><div class="sheet-number">№ ${index + 1}</div></div>${drawing}<div class="measurements"><h3>Розміри сторін</h3><div class="side-grid">${(room.shape === 'rectangle' ? [`AB = ${fmt(room.width)}`, `BC = ${fmt(room.length)}`, `CD = ${fmt(room.width)}`, `DA = ${fmt(room.length)}`] : orderedSides.map((side, i) => `${String.fromCharCode(65+i)}${String.fromCharCode(65+((i+1)%orderedSides.length))} = ${fmt(side.length)}`)).map(item => `<div>${esc(item)}</div>`).join('')}</div>${diagonals ? `<p class="diagonals">Діагоналі: ${esc(diagonals)}</p>` : ''}${overall?`<p class="diagonals">${esc(overall)}</p>`:''}${special?'<p class="special-cut">ЧОРНИЙ ГАРПУН, СПЕЦРОЗКРІЙ</p>':''}${index===project.rooms.length-1?ceilingCountHtml(project.rooms.length):''}</div></section>`
+      return `<section class="sheet"><div class="sheet-head"><div><p class="sheet-object">Об’єкт: ${esc(projectObjectName(project))}</p><h2>Полотно: ${esc(room.canvasNumber || `№${index + 1}`)}</h2><p>${esc(room.name || `Приміщення ${index + 1}`)}</p></div><div class="sheet-number">№ ${index + 1}</div></div>${drawing}<div class="measurements">${note?`<p style="color:#9b5600;font-weight:bold">${esc(note)}</p>`:''}<h3>Розміри сторін</h3><div class="side-grid">${(room.shape === 'rectangle' ? [`AB = ${fmt(room.width)}`, `BC = ${fmt(room.length)}`, `CD = ${fmt(room.width)}`, `DA = ${fmt(room.length)}`] : orderedSides.map((side, i) => `${String.fromCharCode(65+i)}${String.fromCharCode(65+((i+1)%orderedSides.length))} = ${fmt(side.length)}`)).map(item => `<div>${esc(item)}</div>`).join('')}</div>${diagonals ? `<p class="diagonals">Діагоналі: ${esc(diagonals)}</p>` : ''}${overall?`<p class="diagonals">${esc(overall)}</p>`:''}${special?'<p class="special-cut">ЧОРНИЙ ГАРПУН, СПЕЦРОЗКРІЙ</p>':''}${index===project.rooms.length-1?ceilingCountHtml(project.rooms.length):''}</div></section>`
     }).join('')
     const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Розкрій'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;margin:0;padding:22px}.header{border-bottom:2px solid #111;padding-bottom:14px;margin-bottom:18px}.header h1{font-size:25px;margin:0 0 10px}.header p{font-size:17px;margin:4px 0}.sheet{page-break-after:always;break-after:page;min-height:0;padding:8px 0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}.sheet-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #aaa;padding-bottom:8px}.sheet-head h2{font-size:23px;margin:0 0 5px}.sheet-head p{margin:0;color:#444}.sheet-head .sheet-object{font-size:19px;font-weight:bold;color:#111;margin:0 0 6px}.sheet-number{font-size:25px;font-weight:bold}.drawing{display:block;width:100%;height:340px;margin:12px auto 8px}.measurements{margin-top:10px}.measurements h3{font-size:18px;margin-bottom:12px}.side-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.side-grid div{border:1px solid #bbb;padding:6px;font-size:15px;font-weight:bold}.diagonals{margin-top:7px;font-size:14px}.special-cut{margin:10px 0 0;color:#c00000;font-size:24px;font-weight:900;line-height:1.15;break-inside:avoid;-webkit-print-color-adjust:exact;print-color-adjust:exact}@page{size:A4;margin:15mm}@media print{body{padding:0}.sheet{min-height:0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}}${ceilingCountPrintCss}</style></head><body><header class="header"><h1>Креслення для закрійника</h1><p><b>Об’єкт:</b> ${esc(projectObjectName(project))}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p></header>${roomPages || '<p>У цьому об’єкті немає полотен.</p>'+ceilingCountHtml(0)}${ceilingCountPagination}</body></html>`
     const win = window.open('', '_blank')
@@ -864,27 +892,12 @@ export default function App() {
         if((c.flyEnabled?num(c.flyLength):0)+(c.udEnabled?num(c.udLength):0)>(roomPerimeter(room)||0)+1e-6)warnings.push(`${room.name}: довжина периметральних профілів перевищує периметр`)
       }
       if(room.shape==='polygon' && room.estimateAreaMode==='bounds' && actualRoomArea(room)===null)warnings.push(`${room.name}: фактична площа полотна не вказана; дивись креслення`)
-      let pts: Point[]
-      if (room.shape === 'rectangle') {
-        const length = Math.max(0.01, Number(room.length) || 1)
-        const width = Math.max(0.01, Number(room.width) || 1)
-        const ratio = length / width
-        const boxW = Math.min(280, 150 * ratio)
-        const boxH = boxW / ratio
-        const left = (360 - boxW) / 2
-        const top = (190 - boxH) / 2 + 8
-        pts = [
-          { x: left, y: top + boxH },
-          { x: left, y: top },
-          { x: left + boxW, y: top },
-          { x: left + boxW, y: top + boxH }
-        ]
-      } else {
-        pts = room.vertices || regularVertices(room.sides?.length || 4)
-      }
+      const pts=drawingPoints(room,360,224)
+      const note=geometryNote(room)
+      if(note)warnings.push(`${room.name}: ${note}`)
       jobRooms.push({ name: room.name, canvas: room.canvasNumber || `Полотно №${index + 1}`, points: pts.map(p=>({x:Number(p.x),y:Number(p.y)})).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)), sides: room.shape==='rectangle' ? [{label:'AB',length:num(room.width)},{label:'BC',length:num(room.length)},{label:'CD',length:num(room.width)},{label:'DA',length:num(room.length)}] : room.sides.map(v=>({label:v.label,length:num(v.length)})), diagonals: Object.entries(room.diagonals||{}).filter(([label,value])=>validDiagonal(label,room.shape==='rectangle'?4:room.sides.length)&&num(value)>0).map(([label,value])=>({label,length:num(value)})), overallWidth:num(room.overallWidth), overallHeight:num(room.overallHeight), materials: consolidateMaterials(allMaterials.slice(roomStart)) })
       const polygon = pts.map(p => `${p.x},${p.y}`).join(' ')
-      const drawing = `<svg class="mini" viewBox="0 0 360 224" role="img" aria-label="Креслення ${esc(room.name)}"><polygon points="${polygon}" fill="#f7f9fb" stroke="#263746" stroke-width="3"/><text x="180" y="112" text-anchor="middle" font-size="13" font-weight="bold" fill="#222">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text><text x="180" y="215" text-anchor="middle" font-size="12" fill="#667">Схема контуру</text></svg>`
+      const drawing = `<svg class="mini" viewBox="0 0 360 224" role="img" aria-label="Креслення ${esc(room.name)}"><polygon points="${polygon}" fill="#f7f9fb" stroke="#263746" stroke-width="3"/>${pts.map((v,i)=>`<text x="${v.x+8}" y="${v.y-8}" font-size="14" font-weight="bold" fill="#263746">${String.fromCharCode(65+i)}</text>`).join('')}<text x="180" y="112" text-anchor="middle" font-size="13" font-weight="bold" fill="#222">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text><text x="180" y="215" text-anchor="middle" font-size="12" fill="#667">Схема контуру</text></svg>`
       const roomData=jobRooms[jobRooms.length-1]
       const dimensions=roomData.sides.map(v=>`${v.label}: ${qty(v.length)}`).join(' · ')
       const diagonals=roomData.diagonals.filter(v=>v.length>0).map(v=>`${v.label}: ${qty(v.length)}`).join(' · ')
@@ -902,6 +915,8 @@ export default function App() {
   function exportWorkerTask() {
     const project=active
     if(!project)return
+    const invalid=unverifiedMeasuredRooms(project)
+    if(invalid.length){alert('Перевір геометрію перед друком: '+invalid.map(r=>r.name).join(', '));return}
     const esc=escapeHtml
     const {rows,summaryHtml,mapUrl,warningsHtml}=buildWorkerTask(project)
     const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Монтаж'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#202a33;padding:28px;max-width:900px;margin:auto}h1{font-size:26px;margin:0 0 14px}h2{font-size:19px;border-bottom:2px solid #e4a900;padding-bottom:7px;margin-top:24px}p{margin:7px 0}ul{padding-left:22px}li{padding:5px 0;font-size:16px}.roomgrid{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:14px;align-items:start}.mini{width:100%;max-height:145px;border:1px solid #d8dee5;border-radius:6px;background:#fff}.map{display:inline-block;margin-top:10px;padding:10px 14px;background:#eef3f8;border-radius:6px;color:#174c83;text-decoration:none;font-weight:bold}.room{page-break-inside:avoid} @page{size:A4;margin:15mm}@media print{body{padding:0}.roomgrid{grid-template-columns:minmax(0,1fr) 190px}.mini{max-height:130px}}${ceilingCountPrintCss}</style></head><body><h1>Завдання монтажникам</h1><p><b>Об'єкт:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p><p><b>Адреса:</b> ${esc(project.address || 'Не вказана')}</p>${mapUrl ? `<a class="map" href="${mapUrl}">Відкрити маршрут у Google Maps</a>` : ''}${warningsHtml}<section><h2>ЩО ВЗЯТИ НА ОБ’ЄКТ</h2><ul>${summaryHtml || '<li>Комплектуючі не вказані</li>'}</ul></section>${rows || ceilingCountHtml(0)}<p class="pdf-signature" style="margin-top:28px;color:#667">НСК — Натяжні Стелі Коломия</p>${ceilingCountPagination}</body></html>`
@@ -913,6 +928,7 @@ export default function App() {
 
   function exportOverallEstimate(format: 'pdf' | 'jpeg') {
     if (!estimateProject) return
+    if(unverifiedMeasuredRooms(estimateProject).length){alert('Перевір геометрію стель перед друком кошторису.');return}
     const sections = estimateRows(estimateProject)
     const filename = exportName(estimateProject, 'Кошторис')
     const grouped = new Map<string, { label: string; amount: number }>()
@@ -997,7 +1013,7 @@ export default function App() {
     }
     return <div style={{marginTop:20}}>
       <h3>Додаткові діагоналі</h3>
-      <p className="muted">Вибери будь-яку пару несусідніх кутів, наприклад B–H або B–G. Розміри зберігаються та друкуються у кресленні. Вони не замінюють діагоналі для розрахунку площі.</p>
+      <p className="muted">Вибери будь-яку пару несусідніх кутів, наприклад B–H або B–G. У режимі «За розмірами» всі введені діагоналі враховуються та перевіряються. Розміри зберігаються і друкуються у кресленні.</p>
       <label style={labelStyle}>+ Додати діагональ
         <select aria-label="Додати діагональ" style={inputStyle} value="" disabled={!choices.length} onChange={e=>{if(choices.includes(e.target.value))updateDiagonal(room,e.target.value,'')}}>
           <option value="">{choices.length?'Вибрати точки…':'Усі можливі діагоналі додано'}</option>
@@ -1019,6 +1035,17 @@ export default function App() {
     </div>
   }
 
+  function geometryEditor(room: Room) {
+    const enabled=room.geometryMode==='measured', result=enabled?measuredGeometry(room):null
+    return <div style={{marginTop:14,padding:12,border:'1px solid #647586',borderRadius:10}}>
+      <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+        <button type="button" aria-pressed={!enabled} style={{...buttonStyle,background:!enabled?'#ffb900':'#405263',color:!enabled?'#18222c':'#fff'}} onClick={()=>updateRoom(room.id,{geometryMode:'sketch'})}>Ескіз вручну</button>
+        <button type="button" aria-pressed={enabled} style={{...buttonStyle,background:enabled?'#ffb900':'#405263',color:enabled?'#18222c':'#fff'}} onClick={()=>updateRoom(room.id,{geometryMode:'measured'})}>Побудувати за розмірами</button>
+      </div>
+      {result ? result.ok ? <p style={{color:'#60c692',marginBottom:0}}>✓ Контур за замірами · площа {formatNumber(result.area)} м² · найбільша розбіжність {(result.maxError*100).toFixed(2)} см. Перевір форму візуально.</p> : <p style={{color:'#ffd27a',marginBottom:0}}>Не підтверджено: {result.reason} Поки показано вихідний ескіз, друк і публікація заблоковані.</p> : <p className="muted" style={{marginBottom:0}}>Перетягни точки приблизно за формою стелі. Внеси виміряні сторони та достатньо діагоналей, потім натисни «Побудувати за розмірами».</p>}
+    </div>
+  }
+
   function areaModeEditor(room: Room) {
     const mode = room.estimateAreaMode === 'bounds' ? 'bounds' : 'real'
     const real = actualRoomArea(room), bounds = boundsRoomArea(room), billable = roomArea(room)
@@ -1031,7 +1058,7 @@ export default function App() {
       <label style={labelStyle}>Реальна площа вручну, м² (необов’язково)
         <NumericInput key={room.id+'actualAreaOverride'} style={inputStyle} value={room.actualAreaOverride} onChange={v=>updateRoom(room.id,{actualAreaOverride:v})} placeholder="Порожньо — розрахунок за замірами"/>
       </label>
-      <p className="muted">Для Г-подібної чи іншої увігнутої стелі можна внести перевірену фактичну площу (наприклад, суму площ прямокутників). Очисти поле, щоб повернути автоматичний розрахунок трикутниками.</p>
+      <p className="muted">Для Г-подібної чи іншої увігнутої стелі можна внести перевірену фактичну площу (наприклад, суму площ прямокутників). Очисти поле, щоб повернути автоматичний розрахунок. У режимі «За розмірами» площа береться з відновленого контуру.</p>
       <div className="info-row"><span>Реальна площа {room.actualAreaOverride ? '(вручну)' : '(розрахункова)'}</span><b>{fmtArea(real)}</b></div>
       <div className="info-row"><span>Площа по габаритах (ширина × висота)</span><b>{fmtArea(bounds)}</b></div>
       <div className="room-area"><span>До кошторису</span><strong>{fmtArea(billable)}</strong></div>
@@ -1072,7 +1099,7 @@ export default function App() {
       ...s,
       length: old[i]?.length || ''
     }))
-    updateRoom(room.id, { shape: 'polygon', sides: next, vertices: regularVertices(safeCount), diagonals: room.diagonals || {} })
+    updateRoom(room.id, { shape: 'polygon', sides: next, vertices: regularVertices(safeCount), diagonals: room.diagonals || {}, geometryMode:'sketch' })
   }
 
   const panelStyle = {
@@ -1136,7 +1163,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.37</small>
+          <small>Версія 0.7.38</small>
         </div>
       </aside>
 
@@ -1146,7 +1173,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.37</small>
+            <small>v0.7.38</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1543,8 +1570,8 @@ export default function App() {
                   <span>Площа</span>
                   <strong>{activeRoom.length && activeRoom.width ? `${formatNumber(activeRoom.length * activeRoom.width)} м²` : '—'}</strong>
                 </div>
-                <h3 style={{ marginTop: 20 }}>Діагоналі для розрахунку площі</h3>
-                <p className="muted">Виміряй діагоналі від точки A до внутрішніх кутів. Для чотирикутника потрібна A–C; для більшої кількості кутів — A–C, A–D тощо.</p>
+                <h3 style={{ marginTop: 20 }}>Контрольні діагоналі</h3>
+                <p className="muted">Внеси виміряні діагоналі. Додаткові пари кутів можна вибрати нижче.</p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(135px,1fr))', gap: 12 }}>
                   {diagonalKeys(activeRoom.sides.length).map(diagonal => (
                     <label key={diagonal.key} style={labelStyle}>
@@ -1562,24 +1589,20 @@ export default function App() {
                   <strong>{activeRoom.length && activeRoom.width ? `${formatNumber(2 * (activeRoom.length + activeRoom.width))} м` : '—'}</strong>
                 </div>
                 <div style={{ marginTop: 22, padding: 14, background: '#1a2834', borderRadius: 10 }}>
-                  <svg viewBox="0 0 360 190" width="100%" role="img" aria-label="Креслення прямокутної кімнати">
-                    <polygon points="70,35 290,35 290,145 70,145" fill="#33495b" stroke="#ffb900" strokeWidth="3"/>
-                    <text x="25" y="95" fill="#fff" fontSize="13">A — B</text>
-                    <text x="180" y="25" textAnchor="middle" fill="#fff" fontSize="13">B — C</text>
-                    <text x="305" y="95" fill="#fff" fontSize="13">C — D</text>
-                    <text x="180" y="165" textAnchor="middle" fill="#fff" fontSize="13">D — A</text>
-                    {['A','B','C','D'].map((v,i) => {
-                      const pts = [[70,145],[70,35],[290,35],[290,145]]
-                      return <g key={v}><circle cx={pts[i][0]} cy={pts[i][1]} r="5" fill="#ffb900"/><text x={pts[i][0] + (i===0||i===1?-15:8)} y={pts[i][1] + (i===1||i===2?-9:17)} fill="#ffcf52" fontSize="14" fontWeight="bold">{v}</text></g>
-                    })}
+                  <svg viewBox="0 0 360 230" width="100%" role="img" aria-label="Креслення прямокутної кімнати">
+                    {(()=>{const pts=rectangleDrawing(activeRoom.length,activeRoom.width);return <>
+                      <polygon points={pts.map(v=>`${v.x},${v.y}`).join(' ')} fill="#33495b" stroke="#ffb900" strokeWidth="3"/>
+                      {pts.map((v,i)=><g key={i}><circle cx={v.x} cy={v.y} r="5" fill="#ffb900"/><text x={v.x+8} y={v.y-8} fill="#ffcf52" fontSize="14" fontWeight="bold">{String.fromCharCode(65+i)}</text></g>)}
+                    </>})()}
                   </svg>
+                  {rectangleMismatch(activeRoom)&&<p style={{color:'#ffd27a'}}>{geometryNote(activeRoom)}</p>}
                 </div>
                 <p className="muted">Для прямокутної кімнати площа та периметр обчислюються автоматично.</p>
               </div>
             ) : (
               <div style={panelStyle}>
                 <h2 style={{ marginTop: 0 }}>Креслення складної форми</h2>
-                <p className="muted">Перетягни жовті точки мишкою або пальцем, щоб задати контур. Потім внеси фактичну довжину кожної сторони.</p>
+                <p className="muted">Намалюй приблизний контур точками, внеси фактичні довжини та діагоналі. У режимі «За розмірами» малюнок автоматично оновлюється при зміні замірів.</p>
                 <label style={labelStyle}>Кількість кутів
                   <select style={inputStyle} value={activeRoom.sides.length || 4}
                     onChange={e => changeSideCount(activeRoom, Number(e.target.value))}>
@@ -1587,6 +1610,7 @@ export default function App() {
                   </select>
                 </label>
 
+                {geometryEditor(activeRoom)}
                 <div style={{ margin: '12px 0', padding: 12, background: '#1a2834', borderRadius: 10, touchAction: 'none' }}>
                   <svg
                     viewBox="0 0 360 230"
@@ -1596,26 +1620,27 @@ export default function App() {
                     style={{ display: 'block', touchAction: 'none', userSelect: 'none' }}
                   >
                     <polygon
-                      points={(activeRoom.vertices || regularVertices(activeRoom.sides.length || 4)).map(v => `${v.x},${v.y}`).join(' ')}
+                      points={editorPoints.map(v => `${v.x},${v.y}`).join(' ')}
                       fill="#33495b"
                       stroke="#ffb900"
                       strokeWidth="3"
                       strokeLinejoin="round"
                     />
-                    {(activeRoom.vertices || regularVertices(activeRoom.sides.length || 4)).map((v, i, arr) => {
+                    {editorPoints.map((v, i, arr) => {
                       const next = arr[(i + 1) % arr.length]
                       const label = `${String.fromCharCode(65+i)}–${String.fromCharCode(65+((i+1)%arr.length))}`
                       return <g key={`side-${i}`}>
                         <text x={(v.x+next.x)/2} y={(v.y+next.y)/2-8} textAnchor="middle" fill="#ffffff" fontSize="11">{label}</text>
                       </g>
                     })}
-                    {(activeRoom.vertices || regularVertices(activeRoom.sides.length || 4)).map((v, i) => (
+                    {editorPoints.map((v, i) => (
                       <g key={`point-${i}`}>
                         <circle
                           cx={v.x} cy={v.y} r="13"
                           fill="#ffb900" stroke="#fff2bd" strokeWidth="2"
-                          style={{ cursor: 'grab', touchAction: 'none' }}
+                          style={{ cursor: activeRoom.geometryMode==='measured'?'default':'grab', touchAction: 'none' }}
                           onPointerDown={e => {
+                            if(activeRoom.geometryMode==='measured')return
                             e.preventDefault()
                             e.stopPropagation()
                             const svg = e.currentTarget.ownerSVGElement
@@ -1623,12 +1648,15 @@ export default function App() {
                             e.currentTarget.setPointerCapture(e.pointerId)
                           }}
                           onPointerMove={e => {
+                            if(activeRoom.geometryMode==='measured')return
                             if (!(e.buttons || e.pressure > 0)) return
                             const svg = e.currentTarget.ownerSVGElement
                             if (!svg) return
-                            const rect = svg.getBoundingClientRect()
-                            const x = Math.max(12, Math.min(348, (e.clientX-rect.left)/rect.width*360))
-                            const y = Math.max(12, Math.min(218, (e.clientY-rect.top)/rect.height*230))
+                            const matrix=svg.getScreenCTM();if(!matrix)return
+                            const p=svg.createSVGPoint();p.x=e.clientX;p.y=e.clientY
+                            const local=p.matrixTransform(matrix.inverse())
+                            const x = Math.max(12, Math.min(348, local.x))
+                            const y = Math.max(12, Math.min(218, local.y))
                             updateVertex(activeRoom, i, { x, y })
                           }}
                         />
@@ -1648,8 +1676,8 @@ export default function App() {
                     </label>
                   ))}
                 </div>
-                <h3 style={{ marginTop: 20 }}>Діагоналі для розрахунку площі</h3>
-                <p className="muted">Виміряй діагоналі від точки A до внутрішніх кутів. Для чотирикутника потрібна A–C; для більшої кількості кутів — A–C, A–D тощо.</p>
+                <h3 style={{ marginTop: 20 }}>Контрольні діагоналі</h3>
+                <p className="muted">Внеси виміряні діагоналі. Додаткові пари кутів можна вибрати нижче.</p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(135px,1fr))', gap: 12 }}>
                   {diagonalKeys(activeRoom.sides.length).map(diagonal => (
                     <label key={diagonal.key} style={labelStyle}>
@@ -1670,7 +1698,7 @@ export default function App() {
                     : 'Введи всі сторони'}</strong>
                 </div>
                 <p style={{ color: '#ffd27a', fontSize: 13, lineHeight: 1.5 }}>
-                  Контур можна пересувати для наочного креслення. Довжини сторін вводяться окремо за фактичними замірами. Площа розраховується трикутниками від точки A. Для увігнутих контурів, де таке розбиття виходить за межі стелі, перевір площу окремо: додаткові діагоналі поки не змінюють алгоритм площі.
+                  Для точного контуру потрібні всі сторони та достатньо діагоналей. У режимі «За розмірами» площа розраховується за відновленим контуром, зокрема увігнутим. У ручному режимі старий розрахунок площі трикутниками від A не гарантує точності для увігнутих стель. Перевір форму та контрольні розміри перед виготовленням.
                 </p>
               </div>
             )}
@@ -1696,7 +1724,7 @@ export default function App() {
                 <button className="button" style={{ background: '#7f2525', color: '#fff' }} onClick={() => deleteProject(active.id)}><Trash2 size={15}/> Видалити об’єкт</button>
               </div>
             </div>
-            {cloud.session && <JobAssignment key={`assignment-${active.id}`} owner={cloud.session.user.id} projectId={active.id} disabled={(!!active.archivedAt && !active.completedAt) || cloud.status!=='Синхронізовано' || cloud.busy || !!cloud.conflict} build={()=>{if(missingBounds(active))throw new Error('Введи габаритні розміри для кошторису перед публікацією.');return {payload:buildWorkerTask(active).payload,balance:projectPayment(active).balance,final:projectPayment(active).final,project:active}}} onAcceptCompletion={()=>archiveActive(true)} onPaymentSync={()=>void cloud.sync()}/>}
+            {cloud.session && <JobAssignment key={`assignment-${active.id}`} owner={cloud.session.user.id} projectId={active.id} disabled={(!!active.archivedAt && !active.completedAt) || cloud.status!=='Синхронізовано' || cloud.busy || !!cloud.conflict} build={()=>{if(unverifiedMeasuredRooms(active).length)throw new Error('Перевір геометрію стель перед публікацією: '+unverifiedMeasuredRooms(active).map(r=>r.name).join(', '));if(missingBounds(active))throw new Error('Введи габаритні розміри для кошторису перед публікацією.');return {payload:buildWorkerTask(active).payload,balance:projectPayment(active).balance,final:projectPayment(active).final,project:active}}} onAcceptCompletion={()=>archiveActive(true)} onPaymentSync={()=>void cloud.sync()}/>}
             {cloud.session && <JobPhotos key={`photos-${active.id}`} owner={cloud.session.user.id} project={active.id} admin/>}
             {active.completedAt && <div className="panel" style={{marginBottom:18}}>
               <h2>Оплата виконаного об’єкта</h2>
