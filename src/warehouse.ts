@@ -1,4 +1,3 @@
-import type {TransportSettings} from './transport'
 import type {OverheadData} from './overhead'
 import type {CostNeed} from './objectCost'
 import {priceValue} from './objectCost'
@@ -9,7 +8,7 @@ import type {Supplier,Offer} from './procurement'
 import {reserved,netIssued,type Reservation,type Movement} from './stockMovement'
 
 export type StockEntry={key:string;label:string;unit:string;quantity:string;itemId?:string;field?:CostNeed['field'];consumable?:boolean;priceUnit?:string;manual?:boolean;excluded?:boolean}
-export type WarehouseData={entries:StockEntry[];suppliers?:Supplier[];offers?:Offer[];reservations?:Reservation[];movements?:Movement[];orders?:SupplyOrder[];minimums?:Record<string,string>;overhead?:OverheadData;transport?:TransportSettings}
+export type WarehouseData={entries:StockEntry[];suppliers?:Supplier[];offers?:Offer[];reservations?:Reservation[];movements?:Movement[];orders?:SupplyOrder[];minimums?:Record<string,string>;overhead?:OverheadData}
 export type DemandProject={id:string;label:string;status:string;date?:string;needs:CostNeed[];warnings:string[]}
 export type StockRow=StockEntry&{needed:number;totalNeeded:number;onHand:number|null;shortage:number|null;totalShortage:number|null;unitPrice:number|null;reserved:number;ownReserved:number;free:number|null;planned:number;issued:number;incoming:number;physicalShortage:number|null;totalPhysicalShortage:number|null}
 const round=(n:number)=>Math.round(n*1e6)/1e6
