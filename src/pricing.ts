@@ -1,9 +1,10 @@
 import type {Consumable} from './consumables'
+import type {WarehouseData} from './warehouse'
 export type Category = 'Полотна' | 'Профілі' | 'Карнизи' | 'Освітлення основне' | 'Інше'
 export type CatalogCategory = Category | 'LED-профілі'
 export type Unit = 'м' | 'шт.' | 'м²'
 export type PurchasePrices = { purchasePrice?: string; cornerPurchasePrice?: string; ledPurchasePrice?: string; powerPurchasePrice?: string; grillePurchasePrice?: string }
-export type CatalogItem = PurchasePrices & { consumables?: Consumable[]; id: string; category: CatalogCategory; name: string; price: string; unit: Unit; stockLength: string; cornerPrice: string; freeCorners: string; description: string; billStock?: boolean; ledPrice?: string; powerPrice?: string; grillePrice?: string }
+export type CatalogItem = PurchasePrices & { consumables?: Consumable[]; warehouse?: WarehouseData; id: string; category: CatalogCategory; name: string; price: string; unit: Unit; stockLength: string; cornerPrice: string; freeCorners: string; description: string; billStock?: boolean; ledPrice?: string; powerPrice?: string; grillePrice?: string }
 export type Selection = { id: string; item: CatalogItem; quantity: string; corners: string; color: 'white'|'black'; ledEnabled: boolean; ledLength: string; ledColor: string; includedLedDisabled?: boolean; includedLedLength?: string; power: string; grilles: string }
 export type RoomPricing = { fabric: CatalogItem | null; standard: CatalogItem; insert: CatalogItem; insertColor: 'white'|'black'; insertOverride: string; standardCorners: string; items: Selection[] }
 export const categories: Category[] = ['Полотна', 'Профілі', 'Карнизи', 'Освітлення основне', 'Інше']
@@ -24,7 +25,7 @@ export function effectiveCatalog(raw: CatalogItem[]): CatalogItem[] {
 }
 // Owner-only purchase prices stay in the catalog in this release, not sales snapshots.
 export function snapshot(item: CatalogItem): CatalogItem {
-  const { purchasePrice, cornerPurchasePrice, ledPurchasePrice, powerPurchasePrice, grillePurchasePrice, consumables, ...sales } = item
+  const { purchasePrice, cornerPurchasePrice, ledPurchasePrice, powerPurchasePrice, grillePurchasePrice, consumables, warehouse, ...sales } = item
   return {...sales,category:categoryOf(item)}
 }
 export function newPricing(catalog: CatalogItem[]): RoomPricing {
