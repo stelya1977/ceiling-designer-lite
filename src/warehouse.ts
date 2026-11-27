@@ -2,9 +2,10 @@ import type {CostNeed} from './objectCost'
 import {priceValue} from './objectCost'
 import type {CatalogItem} from './pricing'
 import type {Consumable} from './consumables'
+import type {Supplier,Offer} from './procurement'
 
 export type StockEntry={key:string;label:string;unit:string;quantity:string;itemId?:string;field?:CostNeed['field'];consumable?:boolean;priceUnit?:string;manual?:boolean;excluded?:boolean}
-export type WarehouseData={entries:StockEntry[]}
+export type WarehouseData={entries:StockEntry[];suppliers?:Supplier[];offers?:Offer[]}
 export type DemandProject={id:string;label:string;status:string;needs:CostNeed[];warnings:string[]}
 export type StockRow=StockEntry&{needed:number;totalNeeded:number;onHand:number|null;shortage:number|null;totalShortage:number|null;unitPrice:number|null}
 const round=(n:number)=>Math.round(n*1e6)/1e6
@@ -13,7 +14,7 @@ export function stockKey(n:CostNeed){return JSON.stringify([n.consumable?'consum
 export function includesDemand(p:{status:string;archivedAt?:string;completedAt?:string;rooms:unknown[]}){return !p.archivedAt&&!p.completedAt&&!['Виконано','Відмовлено'].includes(p.status)&&p.rooms.length>0}
 export function warehouseFromCatalog(catalog:CatalogItem[]):WarehouseData{
  const data=catalog.find(v=>v.id==='standard-profile')?.warehouse
- return {entries:Array.isArray(data?.entries)?data.entries:[]}
+ return {...data,entries:Array.isArray(data?.entries)?data.entries:[]}
 }
 function catalogNeeds(catalog:CatalogItem[],rules:Consumable[]):CostNeed[]{
  const result:CostNeed[]=[]
@@ -42,5 +43,5 @@ export function setStock(data:WarehouseData,entry:StockEntry,quantity:string):Wa
  const value=priceValue(quantity);if(quantity!==''&&(value===null||(entry.unit==='шт.'&&!Number.isInteger(value))))return data
  const {key,label,unit,itemId,field,consumable,priceUnit,manual,excluded}=entry
  const clean:StockEntry={key,label,unit,quantity:quantity===''?'':String(value),itemId,field,consumable,priceUnit,manual,excluded}
- return {entries:[...data.entries.filter(e=>e.key!==key),clean]}
+ return {...data,entries:[...data.entries.filter(e=>e.key!==key),clean]}
 }
