@@ -5,6 +5,8 @@ import {ObserverEstimateButton} from './Observer'
 import { StaffManager, JobAssignment, type JobPayload } from './Staff'
 import OwnerCalendar from './OwnerCalendar'
 import Finance from './Finance'
+import ObjectFinance from './ObjectFinance'
+import {roomNeeds,type ObjectCosts,type CostNeed} from './objectCost'
 import {reviseDeposit,assignDepositDate,kyivDay,type MoneyPart,type CashRow} from './financeMath'
 import type {PayrollEstimate} from './payrollMath'
 import { consolidateMaterials, type InstallerMaterial } from './installerMaterials'
@@ -121,6 +123,7 @@ function readCatalog(): CatalogItem[] {
 
 type Project = Workflow & {
   id: string
+  objectCosts?: ObjectCosts
   workerReceiptId?: string
   depositParts?: MoneyPart[]
   finalParts?: MoneyPart[]
@@ -325,6 +328,7 @@ export default function App() {
   const [measurementDate, setMeasurementDate] = useState(localDate())
   const [creating, setCreating] = useState(false)
   const [active, setActive] = useState<Project | null>(null)
+  const [financeProjectId,setFinanceProjectId]=useState<string|null>(null)
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null)
   const [roomSection, setRoomSection] = useState<'measurements' | 'components' | 'visualization'>('measurements')
   const [selectedVizTool, setSelectedVizTool] = useState('Карниз / ніша SK 3.0')
@@ -360,7 +364,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.43')
+        setUpdateAvailable(event.data.version !== '0.7.44')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -655,6 +659,21 @@ export default function App() {
     return room.sides.length && room.sides.every(side => Number(side.length) > 0)
       ? room.sides.reduce((sum, side) => sum + Number(side.length), 0)
       : null
+  }
+
+  function projectCostNeeds(p:Project) {
+    const needs:CostNeed[]=[],warnings:string[]=[]
+    for(const r of p.rooms){
+      const area=actualRoomArea(r),perimeter=roomPerimeter(r)
+      if(area===null||!(area>0)||perimeter===null||!(perimeter>0))warnings.push(`${r.name}: перевір фактичну площу та периметр.`)
+      // Legacy rooms must be reviewed in the modern component editor before fixing costs.
+      if(!r.pricing){warnings.push(`${r.name}: старий формат комплектуючих. Переведи кімнату на новий каталог і перевір кількості перед розрахунком.`);continue}
+      const result=roomNeeds(r.id,r.name,r.pricing,area||0,perimeter||0)
+      needs.push(...result.needs)
+      if(result.overrun)warnings.push(`${r.name}: довжина профілів перевищує периметр.`)
+    }
+    if(!p.rooms.length)warnings.push('У об’єкті немає кімнат.')
+    return {needs,warnings}
   }
 
   function money(value: number) {
@@ -1252,7 +1271,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.43</small>
+          <small>Версія 0.7.44</small>
         </div>
       </aside>
 
@@ -1262,7 +1281,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.43</small>
+            <small>v0.7.44</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1816,6 +1835,7 @@ export default function App() {
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <button className="button primary" onClick={saveActiveProject}>Зберегти об’єкт</button>
                 <button className="button secondary" onClick={() => openEstimate(active)}>Відкрити кошторис</button>
+                <button className="button secondary" onClick={()=>setFinanceProjectId(id=>id===active.id?null:active.id)}>Фінанси об’єкта</button>
                 <button className="button secondary" onClick={openLocation}><MapPin size={15}/> Локація об’єкта</button>
                 <button className="button secondary" onClick={exportCuttingPlan}>Креслення для закрійника PDF</button>
                 <button className="button secondary" onClick={exportWorkerTask}><ClipboardList size={15}/> Завдання монтажникам PDF</button>
@@ -1830,6 +1850,7 @@ export default function App() {
               <h2>Оплата виконаного об’єкта</h2>
               {(()=>{const info=projectPayment(active);return <><div className="info-row"><span>Статус оплати</span><b style={{color:info.paid?'#60c692':'#ffc247'}}>{info.paid?'Оплачено':'Не оплачено'}</b></div><div className="info-row"><span>Вартість замовлення</span><b>{money(info.total)}</b></div><div className="info-row"><span>Завдаток</span><b>{money(info.deposit)}</b></div>{info.final>0&&<div className="info-row"><span>Остаточна оплата</span><b>{money(info.final)}</b></div>}<div className="info-row"><span>Залишок до оплати</span><b>{money(info.balance)}</b></div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button className="button primary" disabled={info.paid||info.total<=0} onClick={()=>markPayment(active,true)}>Оплачено</button><button className="button secondary" disabled={!info.final||!!active.workerReceiptId} onClick={()=>markPayment(active,false)}>Скасувати остаточну оплату</button></div>{info.total<=0&&<p className="muted">Спочатку сформуй кошторис.</p>}</>})()}
             </div>}
+            {financeProjectId===active.id&&(()=>{const info=projectPayment(active),costs=projectCostNeeds(active);return <ObjectFinance key={active.id} {...costs} catalog={availableCatalog} revenue={info.total} received={info.deposit+info.final} balance={info.balance} value={active.objectCosts||{}} onChange={objectCosts=>syncProject({...active,objectCosts})}/>})()}
             <div className="detail-grid">
               <div className="panel">
                 <h2>Інформація про об’єкт</h2>
