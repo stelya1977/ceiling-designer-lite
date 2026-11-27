@@ -10,8 +10,8 @@ import { consolidateMaterials, type InstallerMaterial } from './installerMateria
 import RoomComponents from './RoomComponents'
 import NumericInput from './NumericInput'
 import { metresToCm, cmToMetres, formatCm } from './measurementUnits'
-import { solveMeasuredPolygon, fitDrawing, rectangleDrawing, type GeometryResult } from './measuredGeometry'
-import { buildContour, contourDrawing, hasFeatures, type Features, type ContourResult, type Cutout } from './contourFeatures'
+import { solveMeasuredPolygon, solveReferencePolygon, previewReference, fitDrawing, rectangleDrawing, type GeometryResult, type ReferenceResult } from './measuredGeometry'
+import { buildContour, contourDrawing, containsContourPoint, hasFeatures, type Features, type ContourResult, type Cutout } from './contourFeatures'
 
 import { activeStatuses, localDate, projectDate, payment, archive, restore, matchesDate, calendarDays, shiftMonth, type Workflow } from './projectWorkflow'
 import { categories, categoryOf, effectiveCatalog, newPricing, newSelection, calculate, snapshot, stockPlan, num, type DetailedPriceRow, type CatalogCategory, type CatalogItem, type RoomPricing, type Unit } from './pricing'
@@ -63,6 +63,7 @@ type Room = {
   sides: Side[]
   vertices?: Point[]
   geometryMode?: 'sketch' | 'measured'
+  reference0?: Record<string,string>
   contourFeatures?: Features
   diagonals?: Record<string, string>
   overallWidth?: string
@@ -152,13 +153,13 @@ const regularVertices = (count: number): Point[] =>
     const a = -Math.PI / 2 + i * 2 * Math.PI / count
     return { x: 180 + 112 * Math.cos(a), y: 112 + 78 * Math.sin(a) }
   })
-const geometryCache = new WeakMap<Room, GeometryResult>()
+const geometryCache = new WeakMap<Room, GeometryResult | ReferenceResult>()
 function sketchPoints(room: Room): Point[] {
   return room.vertices?.length===room.sides.length ? room.vertices : regularVertices(room.sides.length || 4)
 }
-function measuredGeometry(room: Room): GeometryResult {
+function measuredGeometry(room: Room): GeometryResult | ReferenceResult {
   const cached=geometryCache.get(room); if(cached)return cached
-  const result=solveMeasuredPolygon(room.sides.map(s=>s.length),room.diagonals||{},sketchPoints(room))
+  const result=room.reference0 ? solveReferencePolygon(room.sides.map(s=>s.length),room.reference0,room.diagonals||{},sketchPoints(room)) : solveMeasuredPolygon(room.sides.map(s=>s.length),room.diagonals||{},sketchPoints(room))
   geometryCache.set(room,result);return result
 }
 const featureCache = new WeakMap<Room, ContourResult>()
@@ -173,6 +174,7 @@ function featureResult(room:Room):ContourResult|null {
   }else{
     const base=room.geometryMode==='measured'?measuredGeometry(room):null
     result=base?.ok?buildContour(base.points,room.contourFeatures!):{ok:false,reason:'Спочатку побудуй базовий контур за сторонами та діагоналями.'}
+    if(result.ok&&base?.ok&&'reference' in base&&!containsContourPoint(result,base.reference))result={ok:false,reason:'Точка 0 опинилася поза фактичним контуром або у вирізі. Перевір її розташування.'}
   }
   featureCache.set(room,result);return result
 }
@@ -187,8 +189,26 @@ function drawingPoints(room: Room, width=360, height=230): Point[] {
   const result=room.geometryMode==='measured'?measuredGeometry(room):null
   return fitDrawing(result?.ok?result.points:sketchPoints(room),width,height,30)
 }
+// The same transform as the outline; curves may change the fitted drawing's bounds.
+function referenceDrawing(room:Room,pts:Point[],preview=false):Point|null {
+  if(room.shape!=='polygon'||!room.reference0)return null
+  const result=room.geometryMode==='measured'?measuredGeometry(room):null
+  if(result?.ok&&'reference' in result&&pts.length===result.points.length){
+    const a=result.points[0],b=result.points[1],scale=Math.hypot(pts[1].x-pts[0].x,pts[1].y-pts[0].y)/Math.hypot(b.x-a.x,b.y-a.y)
+    return {x:pts[0].x+(result.reference.x-a.x)*scale,y:pts[0].y+(result.reference.y-a.y)*scale}
+  }
+  return preview?previewReference(room.sides[0]?.length,room.reference0.A,room.reference0.B,pts):null
+}
+function referenceMeasurements(room:Room):{label:string;length:number}[]{
+  if(room.shape!=='polygon'||!room.reference0)return []
+  return room.sides.map((_,i)=>String.fromCharCode(65+i)).map(k=>({label:k+'0',length:Number(room.reference0?.[k])})).filter(v=>Number.isFinite(v.length)&&v.length>0)
+}
+function referenceSvg(room:Room,pts:Point[]):string {
+  const p=referenceDrawing(room,pts);if(!p)return ''
+  return pts.map(v=>`<line x1="${p.x}" y1="${p.y}" x2="${v.x}" y2="${v.y}" stroke="#1671ac" stroke-width="0.8" stroke-dasharray="4 4"/>`).join('')+`<circle cx="${p.x}" cy="${p.y}" r="4" fill="#c00000"/><text x="${p.x+7}" y="${p.y-6}" fill="#c00000" font-size="15" font-weight="bold">0</text>`
+}
 function unverifiedMeasuredRooms(project: Project): Room[] {
-  return project.rooms.filter(r=>(r.shape==='polygon'&&r.geometryMode==='measured'&&!measuredGeometry(r).ok)||(roomHasFeatures(r)&&!featureResult(r)?.ok))
+  return project.rooms.filter(r=>(r.shape==='polygon'&&(r.geometryMode==='measured'&&!measuredGeometry(r).ok||!!r.reference0&&(r.geometryMode!=='measured'||!measuredGeometry(r).ok)))||(roomHasFeatures(r)&&!featureResult(r)?.ok))
 }
 function rectangleMismatch(room: Room): boolean {
   if(room.shape!=='rectangle'||!(Number(room.length)>0)||!(Number(room.width)>0))return false
@@ -339,7 +359,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.39')
+        setUpdateAvailable(event.data.version !== '0.7.40')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -873,13 +893,13 @@ export default function App() {
       const feature=featureDrawing(room,360,230)
       const featureLabels=feature?.centers.map((v,i)=>`<text x="${v.x}" y="${v.y}" text-anchor="middle" font-size="12" font-weight="bold">В${i+1}</text>`).join('')||''
       const vertices=pts.map((v,i)=>`<text x="${v.x+8}" y="${v.y-8}" font-size="14" font-weight="bold" fill="#111">${String.fromCharCode(65+i)}</text>`).join('')
-      const drawing=`<svg class="drawing" viewBox="-8 -8 376 246" role="img" aria-label="Полотно ${index+1}">${feature?`<path d="${feature.path}" fill="#fff" fill-rule="evenodd" stroke="#111" stroke-width="2.5"/>`:`<polygon points="${poly}" fill="#fff" stroke="#111" stroke-width="2.5" stroke-linejoin="round"/>`}${vertices}${featureLabels}<text x="180" y="${feature?16:115}" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">${esc(room.canvasNumber || `Полотно №${index+1}`)}</text></svg>`
+      const drawing=`<svg class="drawing" viewBox="-8 -8 376 246" role="img" aria-label="Полотно ${index+1}">${feature?`<path d="${feature.path}" fill="#fff" fill-rule="evenodd" stroke="#111" stroke-width="2.5"/>`:`<polygon points="${poly}" fill="#fff" stroke="#111" stroke-width="2.5" stroke-linejoin="round"/>`}${referenceSvg(room,pts)}${vertices}${featureLabels}<text x="180" y="${feature||room.reference0?16:115}" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">${esc(room.canvasNumber || `Полотно №${index+1}`)}</text></svg>`
       const note=geometryNote(room)
       const diagonals = Object.entries(room.diagonals || {}).filter(([key, value]) => validDiagonal(key,room.shape==='rectangle'?4:room.sides.length) && Number(value) > 0).map(([key, value]) => `${key} = ${fmt(value)}`).join(' · ')
       const overall = [num(room.overallWidth)>0?`Габаритна ширина = ${fmt(room.overallWidth)}`:'',num(room.overallHeight)>0?`Габаритна висота = ${fmt(room.overallHeight)}`:''].filter(Boolean).join(' · ')
       const c = room.components
       const special = room.pricing ? room.pricing.items.some(v=>['alutat-fly','shadow-ud'].includes(v.item.id)&&num(v.quantity)>0) : !!(c && (((c.flyEnabled??c.profile==='fly')&&num(c.flyLength||c.profileLength)>0)||((c.udEnabled??c.profile==='ud')&&num(c.udLength||c.profileLength)>0)))
-      return `<section class="sheet"><div class="sheet-head"><div><p class="sheet-object">Об’єкт: ${esc(projectObjectName(project))}</p><h2>Полотно: ${esc(room.canvasNumber || `№${index + 1}`)}</h2><p>${esc(room.name || `Приміщення ${index + 1}`)}</p></div><div class="sheet-number">№ ${index + 1}</div></div>${drawing}<div class="measurements">${note?`<p style="color:#9b5600;font-weight:bold">${esc(note)}</p>`:''}<h3>Розміри сторін</h3><div class="side-grid">${(room.shape === 'rectangle' ? [`AB = ${fmt(room.width)}`, `BC = ${fmt(room.length)}`, `CD = ${fmt(room.width)}`, `DA = ${fmt(room.length)}`] : orderedSides.map((side, i) => `${String.fromCharCode(65+i)}${String.fromCharCode(65+((i+1)%orderedSides.length))} = ${fmt(side.length)}`)).map(item => `<div>${esc(item)}</div>`).join('')}</div>${diagonals ? `<p class="diagonals">Діагоналі: ${esc(diagonals)}</p>` : ''}${overall?`<p class="diagonals">${esc(overall)}</p>`:''}${featureTexts(room).map(t=>`<p class="diagonals">${esc(t)}</p>`).join('')}${special?'<p class="special-cut">ЧОРНИЙ ГАРПУН, СПЕЦРОЗКРІЙ</p>':''}${index===project.rooms.length-1?ceilingCountHtml(project.rooms.length):''}</div></section>`
+      return `<section class="sheet"><div class="sheet-head"><div><p class="sheet-object">Об’єкт: ${esc(projectObjectName(project))}</p><h2>Полотно: ${esc(room.canvasNumber || `№${index + 1}`)}</h2><p>${esc(room.name || `Приміщення ${index + 1}`)}</p></div><div class="sheet-number">№ ${index + 1}</div></div>${drawing}<div class="measurements">${note?`<p style="color:#9b5600;font-weight:bold">${esc(note)}</p>`:''}<h3>Розміри сторін</h3><div class="side-grid">${(room.shape === 'rectangle' ? [`AB = ${fmt(room.width)}`, `BC = ${fmt(room.length)}`, `CD = ${fmt(room.width)}`, `DA = ${fmt(room.length)}`] : orderedSides.map((side, i) => `${String.fromCharCode(65+i)}${String.fromCharCode(65+((i+1)%orderedSides.length))} = ${fmt(side.length)}`)).map(item => `<div>${esc(item)}</div>`).join('')}</div>${diagonals ? `<p class="diagonals">Діагоналі: ${esc(diagonals)}</p>` : ''}${referenceMeasurements(room).length?`<p class="diagonals"><b>Від точки 0:</b> ${esc(referenceMeasurements(room).map(v=>`${v.label} = ${fmt(v.length)}`).join(' · '))}</p>`:''}${overall?`<p class="diagonals">${esc(overall)}</p>`:''}${featureTexts(room).map(t=>`<p class="diagonals">${esc(t)}</p>`).join('')}${special?'<p class="special-cut">ЧОРНИЙ ГАРПУН, СПЕЦРОЗКРІЙ</p>':''}${index===project.rooms.length-1?ceilingCountHtml(project.rooms.length):''}</div></section>`
     }).join('')
     const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Розкрій'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;margin:0;padding:22px}.header{border-bottom:2px solid #111;padding-bottom:14px;margin-bottom:18px}.header h1{font-size:25px;margin:0 0 10px}.header p{font-size:17px;margin:4px 0}.sheet{page-break-after:always;break-after:page;min-height:0;padding:8px 0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}.sheet-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #aaa;padding-bottom:8px}.sheet-head h2{font-size:23px;margin:0 0 5px}.sheet-head p{margin:0;color:#444}.sheet-head .sheet-object{font-size:19px;font-weight:bold;color:#111;margin:0 0 6px}.sheet-number{font-size:25px;font-weight:bold}.drawing{display:block;width:100%;height:340px;margin:12px auto 8px}.measurements{margin-top:10px}.measurements h3{font-size:18px;margin-bottom:12px}.side-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.side-grid div{border:1px solid #bbb;padding:6px;font-size:15px;font-weight:bold}.diagonals{margin-top:7px;font-size:14px}.special-cut{margin:10px 0 0;color:#c00000;font-size:24px;font-weight:900;line-height:1.15;break-inside:avoid;-webkit-print-color-adjust:exact;print-color-adjust:exact}@page{size:A4;margin:15mm}@media print{body{padding:0}.sheet{min-height:0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}}${ceilingCountPrintCss}</style></head><body><header class="header"><h1>Креслення для закрійника</h1><p><b>Об’єкт:</b> ${esc(projectObjectName(project))}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p></header>${roomPages || '<p>У цьому об’єкті немає полотен.</p>'+ceilingCountHtml(0)}${ceilingCountPagination}</body></html>`
     const win = window.open('', '_blank')
@@ -924,13 +944,13 @@ export default function App() {
       const feature=featureDrawing(room,360,224)
       const note=geometryNote(room)
       if(note)warnings.push(`${room.name}: ${note}`)
-      jobRooms.push({ name: room.name, canvas: room.canvasNumber || `Полотно №${index + 1}`, points: pts.map(p=>({x:Number(p.x),y:Number(p.y)})).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)), sides: room.shape==='rectangle' ? [{label:'AB',length:num(room.width)},{label:'BC',length:num(room.length)},{label:'CD',length:num(room.width)},{label:'DA',length:num(room.length)}] : room.sides.map(v=>({label:v.label,length:num(v.length)})), diagonals: Object.entries(room.diagonals||{}).filter(([label,value])=>validDiagonal(label,room.shape==='rectangle'?4:room.sides.length)&&num(value)>0).map(([label,value])=>({label,length:num(value)})), overallWidth:num(room.overallWidth), overallHeight:num(room.overallHeight), contourPath:feature?.path, cutoutCenters:feature?.centers, featureNotes:featureTexts(room), materials: consolidateMaterials(allMaterials.slice(roomStart)) })
+      jobRooms.push({ name: room.name, canvas: room.canvasNumber || `Полотно №${index + 1}`, points: pts.map(p=>({x:Number(p.x),y:Number(p.y)})).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)), sides: room.shape==='rectangle' ? [{label:'AB',length:num(room.width)},{label:'BC',length:num(room.length)},{label:'CD',length:num(room.width)},{label:'DA',length:num(room.length)}] : room.sides.map(v=>({label:v.label,length:num(v.length)})), diagonals: Object.entries(room.diagonals||{}).filter(([label,value])=>validDiagonal(label,room.shape==='rectangle'?4:room.sides.length)&&num(value)>0).map(([label,value])=>({label,length:num(value)})), overallWidth:num(room.overallWidth), overallHeight:num(room.overallHeight), referencePoint:referenceDrawing(room,pts)||undefined, referenceMeasurements:referenceMeasurements(room), contourPath:feature?.path, cutoutCenters:feature?.centers, featureNotes:featureTexts(room), materials: consolidateMaterials(allMaterials.slice(roomStart)) })
       const polygon = pts.map(p => `${p.x},${p.y}`).join(' ')
-      const drawing = `<svg class="mini" viewBox="0 0 360 224" role="img" aria-label="Креслення ${esc(room.name)}">${feature?`<path d="${feature.path}" fill="#f7f9fb" fill-rule="evenodd" stroke="#263746" stroke-width="3"/>`:`<polygon points="${polygon}" fill="#f7f9fb" stroke="#263746" stroke-width="3"/>`}${feature?.centers.map((v,i)=>`<text x="${v.x}" y="${v.y}" text-anchor="middle" font-size="12" font-weight="bold">В${i+1}</text>`).join('')||''}${pts.map((v,i)=>`<text x="${v.x+8}" y="${v.y-8}" font-size="14" font-weight="bold" fill="#263746">${String.fromCharCode(65+i)}</text>`).join('')}<text x="180" y="${feature?16:112}" text-anchor="middle" font-size="13" font-weight="bold" fill="#222">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text><text x="180" y="215" text-anchor="middle" font-size="12" fill="#667">Схема контуру</text></svg>`
+      const drawing = `<svg class="mini" viewBox="0 0 360 224" role="img" aria-label="Креслення ${esc(room.name)}">${feature?`<path d="${feature.path}" fill="#f7f9fb" fill-rule="evenodd" stroke="#263746" stroke-width="3"/>`:`<polygon points="${polygon}" fill="#f7f9fb" stroke="#263746" stroke-width="3"/>`}${feature?.centers.map((v,i)=>`<text x="${v.x}" y="${v.y}" text-anchor="middle" font-size="12" font-weight="bold">В${i+1}</text>`).join('')||''}${referenceSvg(room,pts)}${pts.map((v,i)=>`<text x="${v.x+8}" y="${v.y-8}" font-size="14" font-weight="bold" fill="#263746">${String.fromCharCode(65+i)}</text>`).join('')}<text x="180" y="${feature||room.reference0?16:112}" text-anchor="middle" font-size="13" font-weight="bold" fill="#222">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text><text x="180" y="215" text-anchor="middle" font-size="12" fill="#667">Схема контуру</text></svg>`
       const roomData=jobRooms[jobRooms.length-1]
       const dimensions=roomData.sides.map(v=>`${v.label}: ${qty(v.length)}`).join(' · ')
       const diagonals=roomData.diagonals.filter(v=>v.length>0).map(v=>`${v.label}: ${qty(v.length)}`).join(' · ')
-      return `<section class="room"><h2>${esc(room.name)}</h2><div class="roomgrid"><div><p>${esc(roomData.canvas)}</p><p>${esc(dimensions)}</p>${diagonals?`<p>Діагоналі: ${esc(diagonals)}</p>`:''}${roomData.overallWidth?`<p>Габаритна ширина: ${qty(roomData.overallWidth)}</p>`:''}${roomData.overallHeight?`<p>Габаритна висота: ${qty(roomData.overallHeight)}</p>`:''}${featureTexts(room).map(t=>`<p>${esc(t)}</p>`).join('')}</div>${drawing}</div>${index===project.rooms.length-1?ceilingCountHtml(project.rooms.length):''}</section>`
+      return `<section class="room"><h2>${esc(room.name)}</h2><div class="roomgrid"><div><p>${esc(roomData.canvas)}</p><p>${esc(dimensions)}</p>${diagonals?`<p>Діагоналі: ${esc(diagonals)}</p>`:''}${roomData.referenceMeasurements?.length?`<p>Від точки 0: ${esc(roomData.referenceMeasurements.map(v=>`${v.label}: ${qty(v.length)}`).join(' · '))}</p>`:''}${roomData.overallWidth?`<p>Габаритна ширина: ${qty(roomData.overallWidth)}</p>`:''}${roomData.overallHeight?`<p>Габаритна висота: ${qty(roomData.overallHeight)}</p>`:''}${featureTexts(room).map(t=>`<p>${esc(t)}</p>`).join('')}</div>${drawing}</div>${index===project.rooms.length-1?ceilingCountHtml(project.rooms.length):''}</section>`
     }).join('')
     const totals=consolidateMaterials(allMaterials)
     const summaryHtml = totals.map(line=>`<li>${esc(line)}</li>`).join('')
@@ -1064,6 +1084,17 @@ export default function App() {
     </div>
   }
 
+  function referenceEditor(room:Room){
+    if(!room.reference0)return <div style={{marginTop:16}}><button type="button" className="button secondary" onClick={()=>updateRoom(room.id,{reference0:{},geometryMode:'sketch'})}>+ Задати точку 0</button></div>
+    const values=room.reference0,letters=room.sides.map((_,i)=>String.fromCharCode(65+i)),ready=Number(room.sides[0]?.length)>0&&Number(values.A)>0&&Number(values.B)>0,anchor=ready?previewReference(room.sides[0]?.length,values.A,values.B,sketchPoints(room)):null
+    const patch=(key:string,value:string)=>updateRoom(room.id,{reference0:{...values,[key]:value}})
+    const field=(key:string)=><label key={key} style={labelStyle}>{key}0, см<CmInput key={room.id+'ref'+key} style={inputStyle} value={values[key]} onChange={v=>patch(key,v)} placeholder="0"/></label>
+    const grid={display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(125px,1fr))',gap:10}
+    return <div style={{marginTop:16,padding:14,border:'1px solid #647586',borderRadius:10}}><h3 style={{marginTop:0}}>Точка 0 · внутрішня опорна точка</h3><p className="muted">Познач точку на стелі, звідки зручно вимірювати відстані до кутів. AB — та сама сторона, що у списку сторін.</p><div style={grid}><label style={labelStyle}>AB, см<CmInput key={room.id+'refAB'} style={inputStyle} value={room.sides[0]?.length} onChange={v=>updateSide(room,room.sides[0].id,v)} placeholder="0"/></label>{field('A')}{field('B')}</div>
+      {ready&&!anchor&&room.geometryMode!=='measured'&&<p style={{color:'#ffd27a'}}>За AB, A0 і B0 не вдалося показати точку всередині приблизного ескізу. Перевір заміри або уточни форму. Можна внести решту відстаней для точного розрахунку.</p>}
+      {ready&&<><p className="muted">Відстані від тієї самої точки 0 до решти кутів:</p><div style={grid}>{letters.slice(2).map(field)}</div></>}
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" className="button primary" onClick={()=>updateRoom(room.id,{geometryMode:'measured'})}>Побудувати за точкою 0</button><button type="button" className="button secondary" onClick={()=>updateRoom(room.id,{reference0:undefined,geometryMode:'sketch'})}>Видалити точку 0</button></div><p className="muted">Звичайні діагоналі можна додавати для контролю. Якщо промінь перекритий стіною або вирізом, використовуй доступні контрольні діагоналі або звичайний режим.</p></div>
+  }
   function geometryEditor(room: Room) {
     const enabled=room.geometryMode==='measured', result=enabled?measuredGeometry(room):null
     return <div style={{marginTop:14,padding:12,border:'1px solid #647586',borderRadius:10}}>
@@ -1150,13 +1181,13 @@ export default function App() {
 
   function changeSideCount(room: Room, count: number) {
     const safeCount = Math.max(3, Math.min(12, count))
-    if(roomHasFeatures(room)&&!confirm('Зміна кількості кутів скине дуги, заокруглення та внутрішні вирізи. Продовжити?'))return
+    if((roomHasFeatures(room)||room.reference0)&&!confirm('Зміна кількості кутів скине точку 0, дуги, заокруглення та внутрішні вирізи. Продовжити?'))return
     const old = room.sides
     const next = makeSides(safeCount).map((s, i) => ({
       ...s,
       length: old[i]?.length || ''
     }))
-    updateRoom(room.id, { shape: 'polygon', sides: next, vertices: regularVertices(safeCount), diagonals: room.diagonals || {}, geometryMode:'sketch', contourFeatures:undefined })
+    updateRoom(room.id, { shape: 'polygon', sides: next, vertices: regularVertices(safeCount), diagonals: room.diagonals || {}, geometryMode:'sketch', contourFeatures:undefined, reference0:undefined })
   }
 
   const panelStyle = {
@@ -1220,7 +1251,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.39</small>
+          <small>Версія 0.7.40</small>
         </div>
       </aside>
 
@@ -1230,7 +1261,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.39</small>
+            <small>v0.7.40</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1588,11 +1619,11 @@ export default function App() {
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <button
                   style={{ ...buttonStyle, background: activeRoom.shape === 'rectangle' ? '#ffb900' : '#405263', color: activeRoom.shape === 'rectangle' ? '#18222c' : '#fff' }}
-                  onClick={() => {if(activeRoom.shape==='rectangle')return;if(roomHasFeatures(activeRoom)&&!confirm('Зміна форми скине заокруглення, дуги та вирізи. Продовжити?'))return;updateRoom(activeRoom.id,{shape:'rectangle',sides:activeRoom.sides.length===4?activeRoom.sides:makeSides(4),contourFeatures:undefined})}}
+                  onClick={() => {if(activeRoom.shape==='rectangle')return;if((roomHasFeatures(activeRoom)||activeRoom.reference0)&&!confirm('Зміна форми скине точку 0, заокруглення, дуги та вирізи. Продовжити?'))return;updateRoom(activeRoom.id,{shape:'rectangle',sides:activeRoom.sides.length===4?activeRoom.sides:makeSides(4),contourFeatures:undefined,reference0:undefined})}}
                 >Прямокутник</button>
                 <button
                   style={{ ...buttonStyle, background: activeRoom.shape === 'polygon' ? '#ffb900' : '#405263', color: activeRoom.shape === 'polygon' ? '#18222c' : '#fff' }}
-                  onClick={() => {if(activeRoom.shape==='polygon')return;if(roomHasFeatures(activeRoom)&&!confirm('Зміна форми скине заокруглення, дуги та вирізи. Продовжити?'))return;updateRoom(activeRoom.id,{shape:'polygon',sides:activeRoom.sides.length>=3?activeRoom.sides:makeSides(4),vertices:activeRoom.vertices||regularVertices(activeRoom.sides.length||4),contourFeatures:undefined})}}
+                  onClick={() => {if(activeRoom.shape==='polygon')return;if((roomHasFeatures(activeRoom)||activeRoom.reference0)&&!confirm('Зміна форми скине точку 0, заокруглення, дуги та вирізи. Продовжити?'))return;updateRoom(activeRoom.id,{shape:'polygon',sides:activeRoom.sides.length>=3?activeRoom.sides:makeSides(4),vertices:activeRoom.vertices||regularVertices(activeRoom.sides.length||4),contourFeatures:undefined})}}
                 >Складна форма</button>
               </div>
             </div>
@@ -1627,7 +1658,7 @@ export default function App() {
                   <span>Площа</span>
                   <strong>{actualRoomArea(activeRoom)!==null ? `${formatNumber(actualRoomArea(activeRoom)!)} м²` : '—'}</strong>
                 </div>
-                <h3 style={{ marginTop: 20 }}>Контрольні діагоналі</h3>
+                <details style={{marginTop:20}} open={Object.values(activeRoom.diagonals||{}).some(v=>Number(v)>0)||undefined}><summary style={{fontWeight:700,cursor:'pointer'}}>+ Контрольні діагоналі від A</summary>
                 <p className="muted">Внеси виміряні діагоналі. Додаткові пари кутів можна вибрати нижче.</p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(135px,1fr))', gap: 12 }}>
                   {diagonalKeys(activeRoom.sides.length).map(diagonal => (
@@ -1640,6 +1671,7 @@ export default function App() {
                     </label>
                   ))}
                 </div>
+                </details>
                 {extraMeasurements(activeRoom)}
                 {featuresEditor(activeRoom)}
                 {roomHasFeatures(activeRoom)&&areaModeEditor(activeRoom)}
@@ -1679,6 +1711,7 @@ export default function App() {
                     style={{ display: 'block', touchAction: 'none', userSelect: 'none' }}
                   >
                     {(()=>{const feature=featureDrawing(activeRoom);return feature?<><path d={feature.path} fillRule="evenodd" fill="#33495b" stroke="#ffb900" strokeWidth="3"/>{feature.centers.map((p,i)=><text key={i} x={p.x} y={p.y} fill="#fff" textAnchor="middle" fontSize="12">В{i+1}</text>)}</>:<polygon points={editorPoints.map(v=>`${v.x},${v.y}`).join(' ')} fill="#33495b" stroke="#ffb900" strokeWidth="3" strokeLinejoin="round"/>})()}
+                    {(()=>{const p=referenceDrawing(activeRoom,editorPoints,true);return p?<g pointerEvents="none">{editorPoints.map((v,i)=>Number(activeRoom.reference0?.[String.fromCharCode(65+i)])>0?<line key={i} x1={p.x} y1={p.y} x2={v.x} y2={v.y} stroke="#80c9ff" strokeWidth="1.2" strokeDasharray="5 4"/>:null)}<circle cx={p.x} cy={p.y} r="6" fill="#ff4545" stroke="#fff"/><text x={p.x+8} y={p.y-8} fontSize="16" fontWeight="bold" fill="#ff7777">0</text></g>:null})()}
                     {editorPoints.map((v, i, arr) => {
                       const next = arr[(i + 1) % arr.length]
                       const label = `${String.fromCharCode(65+i)}–${String.fromCharCode(65+((i+1)%arr.length))}`
@@ -1729,7 +1762,8 @@ export default function App() {
                     </label>
                   ))}
                 </div>
-                <h3 style={{ marginTop: 20 }}>Контрольні діагоналі</h3>
+                {referenceEditor(activeRoom)}
+                <details style={{marginTop:20}} open={Object.values(activeRoom.diagonals||{}).some(v=>Number(v)>0)||undefined}><summary style={{fontWeight:700,cursor:'pointer'}}>+ Контрольні діагоналі від A</summary>
                 <p className="muted">Внеси виміряні діагоналі. Додаткові пари кутів можна вибрати нижче.</p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(135px,1fr))', gap: 12 }}>
                   {diagonalKeys(activeRoom.sides.length).map(diagonal => (
@@ -1742,6 +1776,7 @@ export default function App() {
                     </label>
                   ))}
                 </div>
+                </details>
                 {extraMeasurements(activeRoom)}
                 {featuresEditor(activeRoom)}
                 {areaModeEditor(activeRoom)}

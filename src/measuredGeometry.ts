@@ -113,3 +113,76 @@ export function solveMeasuredPolygon(sides:readonly (string|number)[],diagonals:
   if(Number.isFinite(smallestError))return fail(`Розміри не сходяться: ${worstLabel}, розбіжність ${(smallestError*100).toFixed(2)} см (допуск 0,5 см). Перевір діагоналі.`)
   return fail('За цими розмірами не виходить простий контур із формою ескізу. Перевір ескіз, сторони та діагоналі.')
 }
+
+export type ReferenceResult = Extract<GeometryResult,{ok:false}> | (Extract<GeometryResult,{ok:true}> & {reference:GeometryPoint})
+export function pointInside(p:GeometryPoint,poly:GeometryPoint[]):boolean {
+  let yes=false
+  for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+    const a=poly[j],b=poly[i]
+    if(Math.abs(cross(a,b,p))<=eps&&p.x>=Math.min(a.x,b.x)-eps&&p.x<=Math.max(a.x,b.x)+eps&&p.y>=Math.min(a.y,b.y)-eps&&p.y<=Math.max(a.y,b.y)+eps)return false
+    if((a.y>p.y)!==(b.y>p.y)&&p.x<(b.x-a.x)*(p.y-a.y)/(b.y-a.y)+a.x)yes=!yes
+  }
+  return yes
+}
+// Locate the two possible intersections of A0 and B0, in sketch coordinates.
+// Prefer the interior side of AB if both points happen to be inside a concave sketch.
+export function previewReference(ab:unknown,a0:unknown,b0:unknown,sketch:GeometryPoint[]):GeometryPoint|null {
+  const d=positive(ab),a=positive(a0),b=positive(b0)
+  if(!d||!a||!b||sketch.length<3||!simple(sketch))return null
+  const x=(a*a-b*b+d*d)/(2*d),h2=a*a-x*x
+  if(!Number.isFinite(h2)||h2< -eps)return null
+  const A=sketch[0],B=sketch[1],ux=(B.x-A.x)/d,uy=(B.y-A.y)/d,h=Math.sqrt(Math.max(0,h2))*Math.sign(signedArea(sketch))
+  const choices=[h,-h].map(y=>({x:A.x+x*ux-y*uy,y:A.y+x*uy+y*ux}))
+  return choices.find(p=>pointInside(p,sketch))||null
+}
+// Reconstruct the ring using triangles 0AB, 0BC, ... . Enumerate both turns
+// around the reference, rather than assuming every radial segment is inside
+// or that all polar angles increase (neither holds for general concave rooms).
+export function solveReferencePolygon(sides:readonly (string|number)[],radials:Record<string,string|number>,diagonals:Record<string,string|number>,sketch:GeometryPoint[]):ReferenceResult {
+  const bad=(reason:string):ReferenceResult=>({ok:false,reason}),n=sides.length
+  if(n<3||n>12||sketch.length!==n||!simple(sketch))return bad('Виправ ескіз: контур має бути простим, з 3–12 точок.')
+  const r=Array.from({length:n},(_,i)=>positive(radials[letter(i)])),d=sides.map(positive)
+  for(let i=0;i<n;i++){if(!d[i])return bad(`Внеси ${label(i,(i+1)%n)}.`);if(!r[i])return bad(`Внеси ${letter(i)}0.`)}
+  const ang:number[]=[]
+  for(let i=0;i<n;i++){
+    const a=r[i],b=r[(i+1)%n],c=d[i]
+    if(c>a+b+eps||c<Math.abs(a-b)-eps)return bad(`Не сходиться трикутник 0${letter(i)}${letter((i+1)%n)}.`)
+    ang.push(Math.acos(Math.max(-1,Math.min(1,(a*a+b*b-c*c)/(2*a*b)))))
+  }
+  const winding=Math.sign(signedArea(sketch)),origin={x:0,y:0},candidates:{points:GeometryPoint[];reference:GeometryPoint;area:number;error:number;score:number}[]=[]
+  const sc={x:sketch.reduce((s,p)=>s+p.x,0)/n,y:sketch.reduce((s,p)=>s+p.y,0)/n},sketchScale=Math.sqrt(sketch.reduce((s,p)=>s+distance(p,sc)**2,0)/n)
+  const extra:{i:number;j:number;d:number}[]=[]
+  for(const [k,v] of Object.entries(diagonals||{}))if(/^[A-Z]-[A-Z]$/.test(k)){
+    const i=k.charCodeAt(0)-65,j=k.charCodeAt(2)-65,len=positive(v)
+    if(i>=0&&j<n&&j-i>1&&!(i===0&&j===n-1)&&len)extra.push({i,j,d:len})
+  }
+  let minError=Infinity
+  for(let mask=0;mask<(1<<(n-1));mask++){
+    const points:GeometryPoint[]=[{x:r[0],y:0}];let angle=0
+    for(let i=0;i<n-1;i++){angle+=ang[i]*((mask>>i)&1?1:-1);points.push({x:r[i+1]*Math.cos(angle),y:r[i+1]*Math.sin(angle)})}
+    let error=Math.abs(distance(points[n-1],points[0])-d[n-1]);if(error>MEASUREMENT_TOLERANCE+eps)continue
+    if(!simple(points)||Math.sign(signedArea(points))!==winding||!pointInside(origin,points))continue
+    for(const c of extra)error=Math.max(error,Math.abs(distance(points[c.i],points[c.j])-c.d))
+    minError=Math.min(minError,error);if(error>MEASUREMENT_TOLERANCE+eps)continue
+    // Match measured outline to the sketch by translation, rotation and uniform scale.
+    // Keep the sketch's clearly convex/concave corners to avoid incorrect fold choices.
+    let same=true
+    for(let i=0;i<n;i++){
+      const a=(i+n-1)%n,b=(i+1)%n,norm=(p:GeometryPoint[])=>cross(p[a],p[i],p[b])/(distance(p[a],p[i])*distance(p[i],p[b]))
+      const u=norm(sketch),v=norm(points);if(Math.abs(u)>0.12&&Math.abs(v)>0.12&&Math.sign(u)!==Math.sign(v)){same=false;break}
+    }
+    if(!same)continue
+    const center={x:points.reduce((s,p)=>s+p.x,0)/n,y:points.reduce((s,p)=>s+p.y,0)/n}
+    let dot=0,det=0
+    points.forEach((p,i)=>{const x=p.x-center.x,y=p.y-center.y,u=sketch[i].x-sc.x,v=sketch[i].y-sc.y;dot+=x*u+y*v;det+=x*v-y*u})
+    const rot=Math.atan2(det,dot),co=Math.cos(rot),si=Math.sin(rot),transform=(p:GeometryPoint)=>({x:(p.x-center.x)*co-(p.y-center.y)*si,y:(p.x-center.x)*si+(p.y-center.y)*co})
+    const fitted=points.map(transform),scale=Math.sqrt(fitted.reduce((s,p)=>s+p.x*p.x+p.y*p.y,0)/n)
+    const score=Math.sqrt(fitted.reduce((s,p,i)=>s+(p.x/scale-(sketch[i].x-sc.x)/sketchScale)**2+(p.y/scale-(sketch[i].y-sc.y)/sketchScale)**2,0)/n)
+    if(candidates.some(c=>c.points.every((p,i)=>distance(p,fitted[i])<1e-7)&&distance(c.reference,transform(origin))<1e-7))continue
+    candidates.push({points:fitted,reference:transform(origin),area:Math.abs(signedArea(points)),error,score})
+  }
+  if(!candidates.length)return bad(Number.isFinite(minError)&&minError>MEASUREMENT_TOLERANCE?`Контрольні діагоналі не сходяться (розбіжність ${(minError*100).toFixed(2)} см).`:'Не вдалося замкнути контур із точкою 0 усередині. Перевір сторони, відстані від 0 та форму ескізу.')
+  candidates.sort((a,b)=>a.score-b.score||a.error-b.error)
+  if(candidates.length>1&&candidates[1].score-candidates[0].score<0.04)return bad('Є кілька можливих контурів. Уточни ескіз або додай контрольну діагональ між кутами.')
+  const c=candidates[0];return {ok:true,points:c.points,reference:c.reference,area:c.area,maxError:c.error}
+}

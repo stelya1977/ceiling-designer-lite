@@ -48,3 +48,7 @@ export function buildContour(base:P[],f:Features):ContourResult{
 export function contourDrawing(result:Extract<ContourResult,{ok:true}>,w=360,h=230,pad=30){
  const samples=[...sample(result.outline),...result.base];const minX=Math.min(...samples.map(p=>p.x)),maxX=Math.max(...samples.map(p=>p.x)),minY=Math.min(...samples.map(p=>p.y)),maxY=Math.max(...samples.map(p=>p.y));const scale=Math.min((w-pad*2)/Math.max(eps,maxX-minX),(h-pad*2)/Math.max(eps,maxY-minY));const p=(v:P)=>({x:w/2+(v.x-(minX+maxX)/2)*scale,y:h/2+(v.y-(minY+maxY)/2)*scale});const coord=(v:P)=>{const t=p(v);return `${t.x.toFixed(4)} ${t.y.toFixed(4)}`};const path=(s:Segment[])=>`M ${coord(s[0].a)} `+s.map(v=>v.r&&v.theta?`A ${(v.r*scale).toFixed(4)} ${(v.r*scale).toFixed(4)} 0 ${Math.abs(v.theta)>Math.PI+eps?1:0} ${v.theta>0?1:0} ${coord(v.b)}`:`L ${coord(v.b)}`).join(' ')+' Z';return {path:[result.outline,...result.holes].map(path).join(' '),points:result.base.map(p),centers:result.centers.map(p)}
 }
+
+export function containsContourPoint(result:Extract<ContourResult,{ok:true}>,point:P):boolean {
+ return inside(point,clean(sample(result.outline)))&&!result.holes.some(h=>{const p=clean(sample(h));return inside(point,p)||p.some((v,i)=>near(v,p[(i+1)%p.length],point)<0.001)})
+}
