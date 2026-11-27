@@ -21,7 +21,7 @@ const paymentError=(e:unknown)=>{const msg=errText(e);if(/republish|synchronize|
 const cachedOwner='nsk-ceiling-verified-owner-v1'
 function localOwner(uid:string){try{return localStorage.getItem(cachedOwner)===uid}catch{return false}}
 function rememberOwner(uid:string){try{localStorage.setItem(cachedOwner,uid)}catch{}}
-function Shell({children}:{children:ReactNode}){return <main className="content narrow" style={{margin:'0 auto',maxWidth:850,padding:20}}><div className="eyebrow">НСК · CEILING DESIGNER LITE 0.7.33</div>{children}</main>}
+function Shell({children}:{children:ReactNode}){return <main className="content narrow" style={{margin:'0 auto',maxWidth:850,padding:20}}><div className="eyebrow">НСК · CEILING DESIGNER LITE 0.7.34</div>{children}</main>}
 export function AccountGate({children}:{children:ReactNode}){
   const [session,setSession]=useState<Session|null>(null),[ready,setReady]=useState(false)
   const [access,setAccess]=useState<{uid:string;role:'owner'|'worker'|'denied';name:string}|null>(null),[error,setError]=useState(''),[retry,setRetry]=useState(0)
