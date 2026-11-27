@@ -26,7 +26,7 @@ const paymentError=(e:unknown)=>{const msg=errText(e);if(/Mark participation fir
 const cachedOwner='nsk-ceiling-verified-owner-v1'
 function localOwner(uid:string){try{return localStorage.getItem(cachedOwner)===uid}catch{return false}}
 function rememberOwner(uid:string){try{localStorage.setItem(cachedOwner,uid)}catch{}}
-function Shell({children}:{children:ReactNode}){return <main className="content narrow" style={{margin:'0 auto',maxWidth:850,padding:20}}><div className="eyebrow">НСК · CEILING DESIGNER PRO 0.7.57</div>{children}</main>}
+function Shell({children}:{children:ReactNode}){return <main className="content narrow" style={{margin:'0 auto',maxWidth:850,padding:20}}><div className="eyebrow">НСК · CEILING DESIGNER PRO 0.7.58</div>{children}</main>}
 export function AccountGate({children}:{children:ReactNode}){
   const [session,setSession]=useState<Session|null>(null),[ready,setReady]=useState(false)
   const [access,setAccess]=useState<{uid:string;role:'owner'|'worker'|'observer'|'denied';name:string}|null>(null),[error,setError]=useState(''),[retry,setRetry]=useState(0)
@@ -53,8 +53,8 @@ export function AccountGate({children}:{children:ReactNode}){
   if(uid&&access?.uid===uid&&access.role==='worker')return <WorkerPortal key={uid} name={access.name} uid={uid} onLogout={()=>void logout()}/>
   return <Shell><div className="panel form-panel" style={{marginTop:20}}>{!ready?<p>Перевірка сеансу…</p>:!uid?<form className="form-panel" onSubmit={login}><h1>Вхід</h1><p className="muted">Власник, монтажники та спостерігачі входять під окремими обліковими записами.</p><label>Логін або електронна пошта<input type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} placeholder="Логін монтажника або пошта власника" required value={email} onChange={e=>setEmail(e.target.value)}/></label><label>Пароль<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="button primary" type="submit" disabled={busy}>Увійти</button></form>:<><h1>{access?.role==='denied'?'Доступ не надано':'Перевірка прав доступу'}</h1><p className="muted">{access?.role==='denied'?'Зверніться до адміністратора.':'Потрібне підключення до сервера.'}</p><button className="button secondary" onClick={()=>setRetry(n=>n+1)}>Повторити</button> <button className="button secondary" onClick={()=>void logout()}>Вийти</button></>}{error&&<p role="alert" style={{color:'#ffb4b4'}}>{error}</p>}</div></Shell>
 }
-export function StaffManager({owner,estimate,labels}:{owner:string;estimate:(p:unknown)=>PayrollEstimate;labels:string[]}){
-  const [tab,setTab]=useState<'team'|'attendance'|'cash'|'payroll'>('team')
+export function StaffManager({owner,estimate,labels,initialTab='team'}:{initialTab?:'team'|'payroll';owner:string;estimate:(p:unknown)=>PayrollEstimate;labels:string[]}){
+  const [tab,setTab]=useState<'team'|'attendance'|'cash'|'payroll'>(initialTab)
   const [previewWorker,setPreviewWorker]=useState<Staff|null>(null)
   const [payWorker,setPayWorker]=useState(''),[attendanceRevision,setAttendanceRevision]=useState(0)
   const [staff,setStaff]=useState<Staff[]>([]),[name,setName]=useState(''),[id,setId]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false)

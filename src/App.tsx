@@ -325,7 +325,7 @@ export default function App() {
   function saveConsumables(rules:Consumable[]){setCatalog(items=>effectiveCatalog(items).map(item=>item.id==='standard-profile'?{...item,consumables:rules}:item))}
   const [catalogPage, setCatalogPage] = useState(false)
   const [warehouseTarget,setWarehouseTarget]=useState<{tab:'need'|'stock'|'buy';project:string;nonce:number}>({tab:'need',project:'all',nonce:0})
-  const [ownerPage,setOwnerPage]=useState<'staff'|'mounts'|'finance'|'warehouse'|null>(null)
+  const [ownerPage,setOwnerPage]=useState<'staff'|'mounts'|'finance'|'warehouse'|'payroll'|null>(null)
   const [catalogCategory, setCatalogCategory] = useState<CatalogCategory>('Профілі')
   const [editingCatalogId, setEditingCatalogId] = useState<string | null>(null)
   const emptyCatalogDraft = { category: 'Профілі' as CatalogCategory, name: '', price: '', purchasePrice: '', cornerPurchasePrice: '', ledPurchasePrice: '', powerPurchasePrice: '', grillePurchasePrice: '', unit: 'м' as Unit, stockLength: '', cornerPrice: '0', freeCorners: '0', description: '', billStock: false, ledPrice: '', powerPrice: '', grillePrice: '' }
@@ -377,7 +377,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.57')
+        setUpdateAvailable(event.data.version !== '0.7.58')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -452,7 +452,7 @@ export default function App() {
     if(creating && (client.trim()||phone.trim()||address.trim()||city.trim()||roomName.trim()||rooms.length) && !confirm('Вийти зі створення об’єкта? Незбережена чернетка буде втрачена.'))return
     setOwnerPage(null);setProjectView(view);setCatalogPage(false);setCreating(false);setEstimateProject(null);setActive(null);setActiveRoomId(null);setQuery('')
   }
-  function navigateOwner(page:'staff'|'mounts'|'finance'|'warehouse') {
+  function navigateOwner(page:'staff'|'mounts'|'finance'|'warehouse'|'payroll') {
     if(creating && (client.trim()||phone.trim()||address.trim()||city.trim()||roomName.trim()||rooms.length) && !confirm('Вийти зі створення об’єкта? Незбережена чернетка буде втрачена.'))return
     setOwnerPage(page);setCatalogPage(false);setCreating(false);setEstimateProject(null);setActive(null);setActiveRoomId(null);setQuery('');if(page==='warehouse')setWarehouseTarget(v=>({tab:'need',project:'all',nonce:v.nonce+1}));return true
   }
@@ -1302,7 +1302,7 @@ export default function App() {
           <button className={`nav-item ${!ownerPage&&!catalogPage&&projectView==='calendar'?'active':''}`} onClick={() => navigateProjects('calendar')}><CalendarDays size={18}/>Календар замірів</button>
           <button className={`nav-item ${catalogPage?'active':''}`} onClick={() => { setOwnerPage(null);setCatalogPage(true); setActive(null); setActiveRoomId(null); setCreating(false); setEstimateProject(null) }}><Layers3 size={18}/>Каталог</button>
           <button className={`nav-item ${ownerPage==='mounts'?'active':''}`} onClick={()=>navigateOwner('mounts')}><CalendarDays size={18}/>Календар монтажів</button>
-          <button className={`nav-item ${ownerPage==='staff'?'active':''}`} onClick={()=>navigateOwner('staff')}><ClipboardList size={18}/>Працівники</button>
+          <button className={`nav-item ${(ownerPage==='staff'||ownerPage==='payroll')?'active':''}`} onClick={()=>navigateOwner('staff')}><ClipboardList size={18}/>Працівники</button>
           <button className={`nav-item ${ownerPage==='finance'?'active':''}`} onClick={()=>navigateOwner('finance')}><ClipboardList size={18}/>Фінанси</button>
           <button className={`nav-item ${ownerPage==='warehouse'?'active':''}`} onClick={()=>navigateOwner('warehouse')}><WarehouseIcon size={18}/>Склад</button>
           <button className="nav-item" disabled><ClipboardList size={18}/>Кошториси</button>
@@ -1311,7 +1311,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.57</small>
+          <small>Версія 0.7.58</small>
         </div>
       </aside>
 
@@ -1322,7 +1322,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.57</small>
+            <small>v0.7.58</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1346,7 +1346,7 @@ export default function App() {
           </div>
         </div>}
 
-        {ownerPage ? (cloud.session ? (ownerPage==='warehouse' ? <Warehouse key={warehouseTarget.nonce} initialTab={warehouseTarget.tab} initialProject={warehouseTarget.project} catalog={availableCatalog} rules={consumableRules} data={warehouseData} projects={demandProjects} onSave={saveWarehouse} onUpdate={updateWarehouse} onToggle={row=>saveWarehouse({...row,excluded:!row.excluded},row.quantity)} onOpen={id=>{const p=projects.find(p=>p.id===id);if(p){setOwnerPage(null);setProjectView('active');setActiveRoomId(null);setActive(p)}}} canEdit={!cloud.conflict&&(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація'))} syncStatus={cloud.status}/> : ownerPage==='finance' ? <Finance key={cloud.session.user.id} owner={cloud.session.user.id} projects={projects.map(p=>({...p,...projectPayment(p)}))} areas={Object.fromEntries(projects.map(p=>[p.id,p.rooms.reduce((acc,r)=>{const a=actualRoomArea(r);return a!==null&&Number.isFinite(a)&&a>0?{...acc,known:acc.known+a}:{...acc,missing:acc.missing+1}},{known:0,missing:p.rooms.length?0:1})]))} costs={Object.fromEntries(projects.map(p=>{const {needs,warnings}=projectCostNeeds(p);return [p.id,projectBusinessCost(needs,warnings,p.objectCosts||{},availableCatalog,consumableRules,warehouseData,p.id)]}))} refusedTransport={projects.filter(p=>p.status==='Відмовлено'&&!p.completedAt&&p.rooms.length>0).map(p=>({id:p.id,client:p.client,day:projectDate(p),cost:transportTotal(p.objectCosts?.transport)?.cents??null}))} warehouse={warehouseData} onWarehouseUpdate={updateWarehouse} canEdit={!cloud.conflict&&(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація'))} syncStatus={cloud.status} onOpen={openFinanceProject} onDate={dateLegacyPayment}/> : ownerPage==='staff' ? <StaffManager key={cloud.session.user.id} owner={cloud.session.user.id} estimate={payrollEstimate} labels={[...availableCatalog.map(v=>v.name),'Блоки живлення','Магнітні решітки','Монтаж світильників']}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
+        {ownerPage ? (cloud.session ? (ownerPage==='warehouse' ? <Warehouse key={warehouseTarget.nonce} initialTab={warehouseTarget.tab} initialProject={warehouseTarget.project} catalog={availableCatalog} rules={consumableRules} data={warehouseData} projects={demandProjects} onSave={saveWarehouse} onUpdate={updateWarehouse} onToggle={row=>saveWarehouse({...row,excluded:!row.excluded},row.quantity)} onOpen={id=>{const p=projects.find(p=>p.id===id);if(p){setOwnerPage(null);setProjectView('active');setActiveRoomId(null);setActive(p)}}} canEdit={!cloud.conflict&&(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація'))} syncStatus={cloud.status}/> : ownerPage==='finance' ? <Finance key={cloud.session.user.id} owner={cloud.session.user.id} projects={projects.map(p=>({...p,...projectPayment(p)}))} areas={Object.fromEntries(projects.map(p=>[p.id,p.rooms.reduce((acc,r)=>{const a=actualRoomArea(r);return a!==null&&Number.isFinite(a)&&a>0?{...acc,known:acc.known+a}:{...acc,missing:acc.missing+1}},{known:0,missing:p.rooms.length?0:1})]))} costs={Object.fromEntries(projects.map(p=>{const {needs,warnings}=projectCostNeeds(p);return [p.id,projectBusinessCost(needs,warnings,p.objectCosts||{},availableCatalog,consumableRules,warehouseData,p.id)]}))} refusedTransport={projects.filter(p=>p.status==='Відмовлено'&&!p.completedAt&&p.rooms.length>0).map(p=>({id:p.id,client:p.client,day:projectDate(p),cost:transportTotal(p.objectCosts?.transport)?.cents??null}))} warehouse={warehouseData} onWarehouseUpdate={updateWarehouse} canEdit={!cloud.conflict&&(cloud.status==='Синхронізовано'||cloud.status.startsWith('Офлайн')||cloud.status.startsWith('Синхронізація'))} syncStatus={cloud.status} onOpen={openFinanceProject} onDate={dateLegacyPayment} onPayroll={()=>navigateOwner('payroll')}/> : (ownerPage==='staff'||ownerPage==='payroll') ? <StaffManager key={cloud.session.user.id+ownerPage} initialTab={ownerPage==='payroll'?'payroll':'team'} owner={cloud.session.user.id} estimate={payrollEstimate} labels={[...availableCatalog.map(v=>v.name),'Блоки живлення','Магнітні решітки','Монтаж світильників']}/> : <OwnerCalendar owner={cloud.session.user.id} onOpen={id=>{const p=projects.find(p=>p.id===id);if(!p){alert('Об’єкта немає в локальних даних. Спочатку синхронізуй програму.');return}setOwnerPage(null);setProjectView(p.archivedAt?'archive':'active');setActiveRoomId(null);setActive(p)}}/>) : <section className="content narrow"><p>Для цього розділу потрібен вхід у хмарний акаунт.</p></section>) : catalogPage ? (
           <section className="content narrow">
             <div className="page-heading"><div><div className="eyebrow">ДОВІДНИК ВИРОБІВ</div><h1>Каталог комплектуючих</h1><p className="muted">Керування цінами продажу та закупівлі. Закупівельні ціни не змінюють кошторис клієнта. Дані зберігаються локально та синхронізуються після входу.</p></div></div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
