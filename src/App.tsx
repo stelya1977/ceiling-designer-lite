@@ -54,6 +54,8 @@ type Room = {
   sides: Side[]
   vertices?: Point[]
   diagonals?: Record<string, string>
+  overallWidth?: string
+  overallHeight?: string
   pricing?: RoomPricing
   components?: {
     ceiling: 'fabric'
@@ -263,7 +265,7 @@ export default function App() {
     }
     const versionMessage = (event: MessageEvent) => {
       if (event.source === navigator.serviceWorker?.controller && event.data?.type === 'CEILING_VERSION') {
-        setUpdateAvailable(event.data.version !== '0.7.27')
+        setUpdateAvailable(event.data.version !== '0.7.28')
       }
     }
     window.addEventListener('online', networkChanged)
@@ -703,12 +705,12 @@ export default function App() {
 
 
   function exportCuttingPlan() {
-    const project = estimateProject || active
+    const project = active || estimateProject
     if (!project) return
     const esc = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
     const fmt = (value: unknown) => {
       const n = Number(value)
-      return Number.isFinite(n) && n > 0 ? `${n.toLocaleString('uk-UA', { maximumFractionDigits: 2 })} м` : '—'
+      return Number.isFinite(n) && n > 0 ? `${n.toLocaleString('uk-UA', { maximumFractionDigits: 3 })} м` : '—'
     }
     const roomPages = project.rooms.map((room, index) => {
       let drawing = ''
@@ -718,29 +720,19 @@ export default function App() {
           <polygon points="130,330 130,90 470,90 470,330" fill="#fff" stroke="#111" stroke-width="3"/>
           <g fill="#111" font-size="22" font-family="Arial"><text x="112" y="350">A</text><text x="112" y="82">B</text><text x="480" y="82">C</text><text x="480" y="350">D</text><text x="300" y="215" text-anchor="middle" font-size="24" font-weight="bold">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text></g></svg>`
       } else {
-        const rawPts = room.vertices || regularVertices(room.sides.length || 4)
-        const lowerLeftTarget = { x: Math.min(...rawPts.map(point => point.x)), y: Math.max(...rawPts.map(point => point.y)) }
-        const startIndex = rawPts.reduce((best, point, i) => Math.hypot(point.x - lowerLeftTarget.x, point.y - lowerLeftTarget.y) < Math.hypot(rawPts[best].x - lowerLeftTarget.x, rawPts[best].y - lowerLeftTarget.y) ? i : best, 0)
-        const signedArea = rawPts.reduce((sum, point, i) => { const next = rawPts[(i + 1) % rawPts.length]; return sum + point.x * next.y - next.x * point.y }, 0)
-        const clockwise = signedArea >= 0
-        const pts = rawPts.map((_, i) => rawPts[(startIndex + (clockwise ? i : -i) + rawPts.length * 2) % rawPts.length])
-        orderedSides = pts.map((_, i) => room.sides[(clockwise ? startIndex + i : startIndex - i - 1 + room.sides.length * 2) % room.sides.length])
+        const pts = room.vertices?.length===room.sides.length ? room.vertices : regularVertices(room.sides.length || 4)
+        orderedSides = room.sides
         const poly = pts.map(v => `${v.x},${v.y}`).join(' ')
-        const sideTexts = pts.map((v, i) => {
-          const next = pts[(i + 1) % pts.length]
-          const side = orderedSides[i]
-          const label = `${String.fromCharCode(65+i)}${String.fromCharCode(65+((i+1)%pts.length))} = ${fmt(side?.length)}`
-          const mx = (v.x + next.x) / 2
-          const my = (v.y + next.y) / 2 - 9
-          return `<text x="${mx}" y="${my}" text-anchor="middle" font-size="11" fill="#111">${esc(label)}</text>`
-        }).join('')
         const vertices = pts.map((v, i) => `<text x="${v.x+10}" y="${v.y-10}" font-size="14" font-weight="bold" fill="#111">${String.fromCharCode(65+i)}</text>`).join('')
-        drawing = `<svg class="drawing" viewBox="0 0 360 230"><polygon points="${poly}" fill="#fff" stroke="#111" stroke-width="2.5" stroke-linejoin="round"/>${vertices}<text x="180" y="115" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text></svg>`
+        drawing = `<svg class="drawing" viewBox="-24 -24 408 278"><polygon points="${poly}" fill="#fff" stroke="#111" stroke-width="2.5" stroke-linejoin="round"/>${vertices}<text x="180" y="115" text-anchor="middle" font-size="15" font-weight="bold" fill="#111">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text></svg>`
       }
-      const diagonals = Object.entries(room.diagonals || {}).filter(([, value]) => Number(value) > 0).map(([key, value]) => `${key} = ${fmt(value)}`).join(' · ')
-      return `<section class="sheet"><div class="sheet-head"><div><h2>Полотно: ${esc(room.canvasNumber || `№${index + 1}`)}</h2><p>${esc(room.name || `Приміщення ${index + 1}`)}</p></div><div class="sheet-number">№ ${index + 1}</div></div>${drawing}<div class="measurements"><h3>Розміри сторін</h3><div class="side-grid">${(room.shape === 'rectangle' ? [`AB = ${fmt(room.width)}`, `BC = ${fmt(room.length)}`, `CD = ${fmt(room.width)}`, `DA = ${fmt(room.length)}`] : orderedSides.map((side, i) => `${String.fromCharCode(65+i)}${String.fromCharCode(65+((i+1)%orderedSides.length))} = ${fmt(side.length)}`)).map(item => `<div>${esc(item)}</div>`).join('')}</div>${diagonals ? `<p class="diagonals">Діагоналі: ${esc(diagonals)}</p>` : ''}</div></section>`
+      const diagonals = Object.entries(room.diagonals || {}).filter(([key, value]) => validDiagonal(key,room.shape==='rectangle'?4:room.sides.length) && Number(value) > 0).map(([key, value]) => `${key} = ${fmt(value)}`).join(' · ')
+      const overall = [num(room.overallWidth)>0?`Габаритна ширина = ${fmt(room.overallWidth)}`:'',num(room.overallHeight)>0?`Габаритна висота = ${fmt(room.overallHeight)}`:''].filter(Boolean).join(' · ')
+      const c = room.components
+      const special = room.pricing ? room.pricing.items.some(v=>['alutat-fly','shadow-ud'].includes(v.item.id)&&num(v.quantity)>0) : !!(c && (((c.flyEnabled??c.profile==='fly')&&num(c.flyLength||c.profileLength)>0)||((c.udEnabled??c.profile==='ud')&&num(c.udLength||c.profileLength)>0)))
+      return `<section class="sheet"><div class="sheet-head"><div><h2>Полотно: ${esc(room.canvasNumber || `№${index + 1}`)}</h2><p>${esc(room.name || `Приміщення ${index + 1}`)}</p></div><div class="sheet-number">№ ${index + 1}</div></div>${drawing}<div class="measurements"><h3>Розміри сторін</h3><div class="side-grid">${(room.shape === 'rectangle' ? [`AB = ${fmt(room.width)}`, `BC = ${fmt(room.length)}`, `CD = ${fmt(room.width)}`, `DA = ${fmt(room.length)}`] : orderedSides.map((side, i) => `${String.fromCharCode(65+i)}${String.fromCharCode(65+((i+1)%orderedSides.length))} = ${fmt(side.length)}`)).map(item => `<div>${esc(item)}</div>`).join('')}</div>${diagonals ? `<p class="diagonals">Діагоналі: ${esc(diagonals)}</p>` : ''}${overall?`<p class="diagonals">${esc(overall)}</p>`:''}${special?'<p class="diagonals"><b>Чорний гарпун, спецрозкрій</b></p>':''}</div></section>`
     }).join('')
-    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Розкрій'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;margin:0;padding:22px}.header{border-bottom:2px solid #111;padding-bottom:14px;margin-bottom:18px}.header h1{font-size:25px;margin:0 0 10px}.header p{font-size:17px;margin:4px 0}.sheet{page-break-after:always;break-after:page;min-height:0;padding:8px 0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}.sheet-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #aaa;padding-bottom:8px}.sheet-head h2{font-size:23px;margin:0 0 5px}.sheet-head p{margin:0;color:#444}.sheet-number{font-size:25px;font-weight:bold}.drawing{display:block;width:100%;height:470px;margin:25px auto 10px}.measurements{margin-top:10px}.measurements h3{font-size:18px;margin-bottom:12px}.side-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.side-grid div{border:1px solid #bbb;padding:12px;font-size:18px;font-weight:bold}.diagonals{margin-top:15px;font-size:15px}@page{size:A4;margin:15mm}@media print{body{padding:0}.sheet{min-height:0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}}</style></head><body><header class="header"><h1>Креслення для закрійника</h1><p><b>Об’єкт:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p></header>${roomPages || '<p>У цьому об’єкті немає полотен.</p>'}</body></html>`
+    const html = `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>${esc(exportName(project,'Розкрій'))}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;margin:0;padding:22px}.header{border-bottom:2px solid #111;padding-bottom:14px;margin-bottom:18px}.header h1{font-size:25px;margin:0 0 10px}.header p{font-size:17px;margin:4px 0}.sheet{page-break-after:always;break-after:page;min-height:0;padding:8px 0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}.sheet-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #aaa;padding-bottom:8px}.sheet-head h2{font-size:23px;margin:0 0 5px}.sheet-head p{margin:0;color:#444}.sheet-number{font-size:25px;font-weight:bold}.drawing{display:block;width:100%;height:340px;margin:12px auto 8px}.measurements{margin-top:10px}.measurements h3{font-size:18px;margin-bottom:12px}.side-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.side-grid div{border:1px solid #bbb;padding:6px;font-size:15px;font-weight:bold}.diagonals{margin-top:7px;font-size:14px}@page{size:A4;margin:15mm}@media print{body{padding:0}.sheet{min-height:0;page-break-inside:avoid;break-inside:avoid}.sheet:last-child{page-break-after:auto;break-after:auto}}</style></head><body><header class="header"><h1>Креслення для закрійника</h1><p><b>Об’єкт:</b> ${esc(project.client || '—')}</p><p><b>Телефон:</b> ${esc(project.phone || '—')}</p></header>${roomPages || '<p>У цьому об’єкті немає полотен.</p>'}</body></html>`
     const win = window.open('', '_blank')
     if (!win) { alert('Дозволь спливаючі вікна, щоб відкрити креслення та зберегти його в PDF.'); return }
     win.document.open()
@@ -786,26 +778,26 @@ export default function App() {
         const length = Math.max(0.01, Number(room.length) || 1)
         const width = Math.max(0.01, Number(room.width) || 1)
         const ratio = length / width
-        const boxW = ratio >= 1 ? 280 : 280 * ratio
-        const boxH = ratio >= 1 ? 150 / ratio : 150
+        const boxW = Math.min(280, 150 * ratio)
+        const boxH = boxW / ratio
         const left = (360 - boxW) / 2
         const top = (190 - boxH) / 2 + 8
         pts = [
+          { x: left, y: top + boxH },
           { x: left, y: top },
           { x: left + boxW, y: top },
-          { x: left + boxW, y: top + boxH },
-          { x: left, y: top + boxH }
+          { x: left + boxW, y: top + boxH }
         ]
       } else {
         pts = room.vertices || regularVertices(room.sides?.length || 4)
       }
-      jobRooms.push({ name: room.name, canvas: room.canvasNumber || `Полотно №${index + 1}`, points: pts.map(p=>({x:Number(p.x),y:Number(p.y)})).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)), sides: room.shape==='rectangle' ? [{label:'AB',length:num(room.width)},{label:'BC',length:num(room.length)},{label:'CD',length:num(room.width)},{label:'DA',length:num(room.length)}] : room.sides.map(v=>({label:v.label,length:num(v.length)})), diagonals: Object.entries(room.diagonals||{}).map(([label,value])=>({label,length:num(value)})), materials: consolidateMaterials(allMaterials.slice(roomStart)) })
+      jobRooms.push({ name: room.name, canvas: room.canvasNumber || `Полотно №${index + 1}`, points: pts.map(p=>({x:Number(p.x),y:Number(p.y)})).filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)), sides: room.shape==='rectangle' ? [{label:'AB',length:num(room.width)},{label:'BC',length:num(room.length)},{label:'CD',length:num(room.width)},{label:'DA',length:num(room.length)}] : room.sides.map(v=>({label:v.label,length:num(v.length)})), diagonals: Object.entries(room.diagonals||{}).filter(([label,value])=>validDiagonal(label,room.shape==='rectangle'?4:room.sides.length)&&num(value)>0).map(([label,value])=>({label,length:num(value)})), overallWidth:num(room.overallWidth), overallHeight:num(room.overallHeight), materials: consolidateMaterials(allMaterials.slice(roomStart)) })
       const polygon = pts.map(p => `${p.x},${p.y}`).join(' ')
       const drawing = `<svg class="mini" viewBox="0 0 360 224" role="img" aria-label="Креслення ${esc(room.name)}"><polygon points="${polygon}" fill="#f7f9fb" stroke="#263746" stroke-width="3"/><text x="180" y="112" text-anchor="middle" font-size="13" font-weight="bold" fill="#222">${esc(room.canvasNumber || `Полотно №${index + 1}`)}</text><text x="180" y="215" text-anchor="middle" font-size="12" fill="#667">Схема контуру</text></svg>`
       const roomData=jobRooms[jobRooms.length-1]
       const dimensions=roomData.sides.map(v=>`${v.label}: ${qty(v.length)}`).join(' · ')
       const diagonals=roomData.diagonals.filter(v=>v.length>0).map(v=>`${v.label}: ${qty(v.length)}`).join(' · ')
-      return `<section class="room"><h2>${esc(room.name)}</h2><div class="roomgrid"><div><p>${esc(roomData.canvas)}</p><p>${esc(dimensions)}</p>${diagonals?`<p>Діагоналі: ${esc(diagonals)}</p>`:''}</div>${drawing}</div></section>`
+      return `<section class="room"><h2>${esc(room.name)}</h2><div class="roomgrid"><div><p>${esc(roomData.canvas)}</p><p>${esc(dimensions)}</p>${diagonals?`<p>Діагоналі: ${esc(diagonals)}</p>`:''}${roomData.overallWidth?`<p>Габаритна ширина: ${qty(roomData.overallWidth)}</p>`:''}${roomData.overallHeight?`<p>Габаритна висота: ${qty(roomData.overallHeight)}</p>`:''}</div>${drawing}</div></section>`
     }).join('')
     const totals=consolidateMaterials(allMaterials)
     const summaryHtml = totals.map(line=>`<li>${esc(line)}</li>`).join('')
@@ -894,6 +886,46 @@ export default function App() {
       const end = i + 2
       return { key: `A-${String.fromCharCode(65 + end)}`, label: `A–${String.fromCharCode(65 + end)}` }
     })
+  }
+
+  function validDiagonal(key: string, count: number) {
+    if (!/^[A-Z]-[A-Z]$/.test(key)) return false
+    const a = key.charCodeAt(0)-65, b = key.charCodeAt(2)-65
+    return a >= 0 && b < count && a < b && b-a > 1 && !(a===0 && b===count-1)
+  }
+
+  function extraMeasurements(room: Room) {
+    const count = room.shape==='rectangle' ? 4 : room.sides.length
+    const values = room.diagonals || {}
+    const fixed = new Set(diagonalKeys(count).map(d=>d.key))
+    const extras = Object.keys(values).filter(k=>validDiagonal(k,count)&&!fixed.has(k)).sort()
+    const choices: string[] = []
+    for(let a=0;a<count;a++) for(let b=a+2;b<count;b++) {
+      const key=String.fromCharCode(65+a)+'-'+String.fromCharCode(65+b)
+      if(validDiagonal(key,count)&&!fixed.has(key)&&!Object.prototype.hasOwnProperty.call(values,key))choices.push(key)
+    }
+    return <div style={{marginTop:20}}>
+      <h3>Додаткові діагоналі</h3>
+      <p className="muted">Вибери будь-яку пару несусідніх кутів, наприклад B–H або B–G. Розміри зберігаються та друкуються у кресленні. Вони не замінюють діагоналі для розрахунку площі.</p>
+      <label style={labelStyle}>+ Додати діагональ
+        <select aria-label="Додати діагональ" style={inputStyle} value="" disabled={!choices.length} onChange={e=>{if(choices.includes(e.target.value))updateDiagonal(room,e.target.value,'')}}>
+          <option value="">{choices.length?'Вибрати точки…':'Усі можливі діагоналі додано'}</option>
+          {choices.map(k=><option key={k} value={k}>{k.replace('-','–')}</option>)}
+        </select>
+      </label>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))',gap:12}}>
+        {extras.map(k=><div key={room.id+k}>
+          <label style={labelStyle}>{k.replace('-','–')}, м<NumericInput key={room.id+k} value={values[k]} style={inputStyle} onChange={v=>updateDiagonal(room,k,v)} placeholder="0,000"/></label>
+          <button className="button secondary" type="button" onClick={()=>{const next={...values};delete next[k];updateRoom(room.id,{diagonals:next})}}>Видалити {k}</button>
+        </div>)}
+      </div>
+      <h3 style={{marginTop:20}}>Габаритні розміри</h3>
+      <p className="muted">Фактичні максимальні габарити стелі. Не впливають на кошторис.</p>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))',gap:12}}>
+        <label style={labelStyle}>Габаритна ширина, м<NumericInput key={room.id+'overallWidth'} style={inputStyle} value={room.overallWidth} onChange={v=>updateRoom(room.id,{overallWidth:v})} placeholder="0,000"/></label>
+        <label style={labelStyle}>Габаритна висота, м<NumericInput key={room.id+'overallHeight'} style={inputStyle} value={room.overallHeight} onChange={v=>updateRoom(room.id,{overallHeight:v})} placeholder="0,000"/></label>
+      </div>
+    </div>
   }
 
   function heron(a: number, b: number, c: number) {
@@ -992,7 +1024,7 @@ export default function App() {
           <div className="company">НСК — Натяжні Стелі Коломия</div>
           <button className="nav-item" disabled><Settings size={18}/>Налаштування</button>
           <button className="nav-item" onClick={downloadLocalBackup}><Download size={18}/>Резервна копія</button>
-          <small>Версія 0.7.27</small>
+          <small>Версія 0.7.28</small>
         </div>
       </aside>
 
@@ -1002,7 +1034,7 @@ export default function App() {
           <div className="topbar-right" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <span className="status-dot" style={{ background: networkOnline && cloud.status === 'Синхронізовано' ? '#60c692' : '#ffb900' }}/>
             <span>{networkOnline ? cloud.status : 'Офлайн · локальна робота'}</span>
-            <small>v0.7.27</small>
+            <small>v0.7.28</small>
             {offlineReady && <small title="Файли програми збережено на пристрої">Офлайн-запуск готовий</small>}
             {cloud.session ? <><button className="button secondary" disabled={!networkOnline || cloud.busy || !!cloud.conflict} onClick={() => void cloud.sync()}>Синхронізувати</button><button className="button secondary" disabled={cloud.busy} onClick={async () => { if (!confirm('Вийти з хмарного облікового запису? Локальні дані залишаться в браузері.')) return; setLoginError(''); try { await cloud.logout() } catch (e) { setLoginError(String(e)) } }}>Вийти</button></> : <button className="button" disabled={!networkOnline || !cloud.ready} onClick={() => { setLoginError(''); setLoginOpen(v => !v) }}>Увійти</button>}
           </div>
@@ -1411,6 +1443,7 @@ export default function App() {
                     </label>
                   ))}
                 </div>
+                {extraMeasurements(activeRoom)}
                 <div className="room-area">
                   <span>Розрахункова площа</span>
                   <strong>{polygonArea(activeRoom) === null ? 'Введи сторони й діагоналі' : `${formatNumber(polygonArea(activeRoom)!)} м²`}</strong>
@@ -1519,6 +1552,7 @@ export default function App() {
                     </label>
                   ))}
                 </div>
+                {extraMeasurements(activeRoom)}
                 <div className="room-area">
                   <span>Розрахункова площа</span>
                   <strong>{polygonArea(activeRoom) === null ? 'Введи сторони й діагоналі' : `${formatNumber(polygonArea(activeRoom)!)} м²`}</strong>
@@ -1530,7 +1564,7 @@ export default function App() {
                     : 'Введи всі сторони'}</strong>
                 </div>
                 <p style={{ color: '#ffd27a', fontSize: 13, lineHeight: 1.5 }}>
-                  Контур можна пересувати для наочного креслення. Довжини сторін вводяться окремо за фактичними замірами. Площа розраховується розбиттям контуру на трикутники за формулою Герона після введення всіх сторін і діагоналей від точки A.
+                  Контур можна пересувати для наочного креслення. Довжини сторін вводяться окремо за фактичними замірами. Площа розраховується трикутниками від точки A. Для увігнутих контурів, де таке розбиття виходить за межі стелі, перевір площу окремо: додаткові діагоналі поки не змінюють алгоритм площі.
                 </p>
               </div>
             )}
